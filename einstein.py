@@ -1,391 +1,801 @@
-"""
-A small library for specifying neural networks using index notation similar to Einstein summation notation.
-"""
+# from lark import Lark, Transformer, v_args
+from re import I
+from lark import Lark
+import jax
+from jax import numpy as jnp
+from jax import random
+from jax import jit, vmap, grad, jacobian
+import pyperclip
+import string
+import math
 
-import numpy as np
-import jax.numpy as jnp
-import uuid
-from IPython.display import display, Math
+l = Lark.open("einstein.lark")# l = Lark(r"""
+# start: body
+
+# body: statement+
+
+# statement: (return | equation | function) ("\n" | ";")
+
+# return: "return" expression ("," expression)*
+# equation: value "=" expression
+# function: "function" IDENTIFIER parameter_tuple body "end"
+# parameter_tuple: "(" (IDENTIFIER ("," IDENTIFIER)*)? ")"
+
+# expression: sum
+# sum: product (sum_term | sub_term)*
+# sum_term: "+" product
+# sub_term: "-" product
+# product: factor (prod_term | div_term)*
+# prod_term: "*" factor
+# div_term: "/" factor
+# factor: power | value
+# power: value ("^" value)
+# value   : pyattr "(" expression ")" -> function_call
+#         | "(" expression ")"            -> paren_expr
+#         | tensor
+#         | NUMBER
+# tensor: index "[" index ("," index)* "]"
+# index: INDEX_IDENTIFIER ("_" NUMBER)?
+# pyattr: IDENTIFIER ("." IDENTIFIER)*
+# INDEX_IDENTIFIER: LETTER (LETTER|NUMBER)*
+# IDENTIFIER: LETTER (LETTER|NUMBER|"_")*
+# LETTER: "a".."z" | "A".."Z"
+# NUMBER: "0".."9"+
+
+# WHITESPACE: (" " | "\n")+
+# %ignore WHITESPACE
+
+class Expression:
+    def tensors(self):
+        tensors = []
+        for child in self.children():
+            tensors.extend(child.tensors())
+        return tensors
 
 
-class IndexExpression:
-    """
-    A class for representing index expressions
-    """
-    def __init__(self, operation, subexpressions):
-        self.operation = operation
-        self.subexpressions = subexpressions
-        
-    def __eq__(self, other):
-        return self.operation == other.operation and self.subexpressions == other.subexpressions
-    
-    def __hash__(self):
-        return hash(str(self))
-
-    def __str__(self):
-        return str(self.operation) + '(' + ','.join(str(s) for s in self.subexpressions) + ')'
-
+class Sum(Expression):
+    def __init__(self, *terms):
+        self.terms = terms
     def __repr__(self):
-        return str(self)
-    
-    def __add__(self, other):
-        return IndexExpression('+', [self, other])
-    
-    def __radd__(self, other):
-        return IndexExpression('+', [other, self])
-    
-    def __sub__(self, other):
-        return IndexExpression('-', [self, other])
-    
-    def __rsub__(self, other):
-        return IndexExpression('-', [other, self])
-    
-    def __mul__(self, other):
-        return IndexExpression('*', [self, other])
-    
-    def __rmul__(self, other):
-        return IndexExpression('*', [other, self])
-    
-    def __truediv__(self, other):
-        return IndexExpression('/', [self, other])
-    
-    def __rtruediv__(self, other):
-        return IndexExpression('/', [other, self])
-    
-    def __pow__(self, other):
-        return IndexExpression('**', [self, other])
-    
-    def __rpow__(self, other):
-        return IndexExpression('**', [other, self])
+        return f"Sum({', '.join(repr(t) for t in self.terms)})"
+    def pystr(self):
+        return "( " + " + ".join(t.pystr() for t in self.terms) + " )"
+    def children(self):
+        return self.terms
 
-    def __neg__(self):
-        return IndexExpression('-', [self])
-    
-    def __pos__(self):
-        return IndexExpression('+', [self])
-    
-    def __abs__(self):
-        return IndexExpression('abs', [self])
-    
-    def __invert__(self):
-        return IndexExpression('~', [self])
-    
-    def __call__(self, *args):
-        return IndexExpression('()', [self] + list(args))
-        
-    def __lt__(self, other):
-        return IndexExpression('<', [self, other])
-            
-    def __le__(self, other):
-        
-        return IndexExpression('<=', [self, other])
-    
-    def __gt__(self, other):
-        return IndexExpression('>', [self, other])
-    
-    def __ge__(self, other):
-        return IndexExpression('>=', [self, other])
-    
-    def __eq__(self, other):
-        return IndexExpression('==', [self, other])
-    
-    def __ne__(self, other):
-        return IndexExpression('!=', [self, other])
-    
-    def __and__(self, other):
-        return IndexExpression('&', [self, other])
-    
-    def __or__(self, other):
-        return IndexExpression('|', [self, other])
-    
-    def __xor__(self, other):
-        return IndexExpression('^', [self, other])
-        
-    def __getstate__(self):
-        return self.operation, self.subexpressions
-    
-    def __setstate__(self, state):
-        self.operation, self.subexpressions = state
-        
-    def to_latex(self, prev_precedence=0):
-        """
-        Convert the expression to LaTeX
-        """
-        precedence = {
-            '==': 1,
-            '!=': 1,
-            '<': 2,
-            '<=': 2,
-            '>': 2,
-            '>=': 2,
-            '+': 3,
-            '-': 3,
-            '*': 4,
-            '/': 0,
-            '**': 5,
-            '&': 6,
-            '|': 6,
-            '^': 0,
-            '~': 6,
-            '()': 7,
-            'abs': -1,
-        }
-        operators = {
-            '+': ['', '+', ''],
-            '-': ['', '-', ''],
-            '*': ['', ' \\cdot ', ''],
-            '/': ['\\frac{', '}{', '}'],
-            '**': ['', '^{', '}'],
-            '<': ['', '<', ''],
-            '<=': ['', ' \\leq ', ''],
-            '>': ['', '>', ''],
-            '>=': ['', ' \\geq ', ''],
-            '==': ['', '=', ''],
-            '!=': ['', ' \\neq ', ''],
-            '&': ['', ' \\wedge ', ''],
-            '|': ['', ' \\vee ', ''],
-            '^': ['', ' \\oplus ', ''],
-            '()': ['(', ')', ''],
-            '[]': ['[', ']', ''],
-            'abs': ['\\left|', '', '\\right|'],
-            '~': ['\\left\\lnot', '', ''],
-            '<>': ['', ' \\neq ', ''],
-            '<': ['', '<', ''],
-            '>': ['', '>', ''],
-            '<=': ['', ' \\leq ', ''],
-            '>=': ['', ' \\geq ', ''],
-            '==': ['', '=', ''],
-            '!=': ['', ' \\neq ', ''],
-        }
-        
-        if isinstance(self, IndexExpression):
-            s = ''
-            for i, subexpression in enumerate(self.subexpressions):
-                if i > 0:
-                    s += operators[self.operation][1]
-                if isinstance(subexpression, IndexExpression):
-                    s += subexpression.to_latex(precedence[self.operation])
-                else:
-                    s += str(subexpression)
-            s = operators[self.operation][0] + s + operators[self.operation][2]
-            # If this operator (e.g. *) binds more tightly than its parent (e.g. +), parenthesis are not needed. Otherwise, they are.
-            if precedence[self.operation] == -1:
-                pass
-            elif precedence[self.operation] < prev_precedence:
-                s = '\\left(' + s + '\\right)'
-            return s
-        else:
-            return str(self)
-        
-        
-                
-                
-class Indices(IndexExpression):
-    """
-    A class for representing expressions involving indices
-    """
-    def __init__(self, indices):
+
+class Product(Expression):
+    def __init__(self, *factors):
+        self.factors = factors
+    def __repr__(self):
+        return f"Product({', '.join(repr(f) for f in self.factors)})"
+    def pystr(self):
+        return " * ".join(f.pystr() for f in self.factors)
+    def children(self):
+        return self.factors
+
+
+class Power(Expression):
+    def __init__(self, base, exponent):
+        self.base = base
+        self.exponent = exponent
+    def __repr__(self):
+        return f"Power({repr(self.base)}, {repr(self.exponent)})"
+    def pystr(self):
+        return f"( {self.base.pystr()} )**( {self.exponent.pystr()} )"
+    def children(self):
+        return [self.base, self.exponent]
+
+
+class Tensor(Expression):
+    def __init__(self, *indices):
         self.indices = indices
-        self.realised = False
-
-    def __str__(self):
-        return ','.join(str(i) for i in self.indices)
-
     def __repr__(self):
-        return str(self)
-    
-    def to_latex(self, prev_precedence=0):
-        s = self.indices[0] + r"_{"
-        for i, index in enumerate(self.indices[1:]):
-            if isinstance(index, tuple):
-                s += str(index[0]) + r"_{" + str(index[1]) + r"}"
-            else:
-                s += str(index)
-            if i < len(self.indices) - 2:
-                s += r" "
-        s += r"}"
-        return s
-    
+        return f"Tensor({', '.join(repr(i) for i in self.indices)})"
+    def canonical_pyname(self):
+        return "_".join(i.basename() for i in self.indices)
+    def pystr(self):
+        return self.canonical_pyname()
+    def children(self):
+        return [self]
+    def tensors(self):
+        return [self]
+    def leading_index(self):
+        return self.indices[0]
+    def nonleading_indices(self):
+        return self.indices[1:]
     def __eq__(self, other):
-        return self.indices == other.indices
-
+        return isinstance(other, Tensor) and self.indices == other.indices
     def __hash__(self):
-        return hash(str(self))
-    
+        return hash(tuple(self.indices))
 
-class Size(IndexExpression):
-    """
-    A class for representing expressions involving sizes
-    """
+class IdentityTensor(Expression):
+    def __init__(self, *indices):
+        self.indices = indices
+    def __repr__(self):
+        return f"1({', '.join(repr(i) for i in self.indices)})"
+    def pystr(self):
+        return self.canonical_pyname()
+    def canonical_pyname(self):
+        return "1_" + "_".join(i.basename() for i in self.indices)
+    def children(self):
+        return []
+    def tensors(self):
+        return []
+
+class Index:
+    def __init__(self, name, idx=None):
+        self.name = name
+        self.idx = idx
+    def __repr__(self):
+        return f"Index({self.name}, {self.idx})"
+    def basename(self):
+        return self.name
+    def pystr(self):
+        return self.name if self.idx is None else f"{self.name}{self.idx}"
+    def tensors(self):
+        return [self]
+    def __eq__(self, other):
+        return isinstance(other, Index) and self.name == other.name and self.idx == other.idx
+    def __hash__(self):
+        return hash((self.name, self.idx))
+
+
+class Number:
+    def __init__(self, value):
+        self.value = value
+    def pystr(self):
+        return str(self.value)
+    def tensors(self):
+        return []
+
+
+class Identifier:
     def __init__(self, name):
         self.name = name
-
-    def __str__(self):
-        return '||' + self.name + '||'
-
     def __repr__(self):
-        return str(self)
-    
-    def to_latex(self, prev_precedence=0):
-        return r"\|" + self.name + r"\|"
-
-    def __hash__(self):
-        return hash(str(self))
+        return f"Identifier({self.name})"
+    def pystr(self):
+        return self.name
+    def tensors(self):
+        return []
 
 
-class Realised(IndexExpression):
-        """
-        Represents realised values of an index. For example, $x(t) = x_0 e^{-t}$ would be represented as `ie['x','t'] = ie['x_0',{'name':'t', 'value':0}] * np.euler**(-ie['t']).value()`
-        """
-        def __init__(self, name):
-            self.name = name
-            self.realised = True
-
-        def __str__(self):
-            return str(self.name)
-
-        def __repr__(self):
-            return str(self)
-        
-        def to_latex(self, prev_precedence=0):
-            return str(self.name)
-
-        def __hash__(self):
-            return hash(str(self))
-
-
-class Concatenate(IndexExpression):
-    """
-    A class for representing concatenation
-    """
-    def __init__(self, from_indices, to_indices):
-        self.from_indices = from_indices
-        self.to_indices = to_indices
-        self.realised = False
-
-    def __str__(self):
-        return ','.join(str(i) for i in self.from_indices) + '->' + ','.join(str(i) for i in self.to_indices)
-
-    def __repr__(self):
-        return str(self)
-    
-    def to_latex(self, prev_precedence=0):
-        # Concatenation operator: $\mathbin{+\mkern-10mu+}_{abc \to d}
-        return r"\mathbin{+\mkern-10mu+}_{{" + ' '.join(i[0] + r"_{" + str(i[1]) + r"}" if isinstance(i, tuple) else str(i) for i in self.from_indices.indices) + r"} \to {" + ' '.join(i[0] + r"_{" + str(i[1]) + r"}" if isinstance(i, tuple) else str(i) for i in self.to_indices.indices) + r"}}"
-    
-    def __eq__(self, other):
-        return self.from_ == other.from_ and self.to_ == other.to_
-
-    def __hash__(self):
-        return hash(str(self))
-    
-    
-class Function(IndexExpression):
-    """
-    Represents a function
-    """
-    def __init__(self, name, function=None):
+class FunctionCall(Expression):
+    def __init__(self, name, *args):
         self.name = name
-        self.function = function
-        self.parameters = None
-                
-    def __str__(self):
-        return self.name + '(' + ','.join(str(i) for i in self.parameters) + ')'
-    
+        self.args = args
     def __repr__(self):
-        return str(self)
+        return f"FunctionCall({self.name}, {', '.join(repr(a) for a in self.args)})"
+    def pystr(self):
+        return f"{self.name}( {', '.join(a.pystr() for a in self.args)} )"
+    def children(self):
+        return self.args
 
-    def to_latex(self, prev_precedence=0):
-        return r"\mathrm{" + self.name + r"}" + r"\left(" + ','.join(p.to_latex() for p in self.parameters) + r"\right)"
-    
-    def __eq__(self, other):
-        return self.name == other.name and self.parameters == other.parameters
-    
-    def __hash__(self):
-        return hash(str(self))
-    
-    def __call__(self, *args):
-        self.parameters = args
-        return self
-        
 
-class IndexEquations:
-    """
-    Represents equations in index notation. In essence, it assigns each sequence of indices to an expression of indices.
-    """
-    def __init__(self):
-        self.equations = {}
+class Return(Expression):
+    def __init__(self, *values):
+        self.values = values
+    def __repr__(self):
+        return f"Return({', '.join(repr(v) for v in self.values)})"
+    def pystr(self):
+        return f"return {', '.join(v.pystr() for v in self.values)}"
+    def children(self):
+        return self.values
 
-    def __setitem__(self, names, value):
-        """
-        Define a variable as a sequence of indices.
-        """
-        if isinstance(names, str):
-            names = tuple([s.strip() for s in names.split(",") if s.strip() != ""])
-        if isinstance(names, tuple):
-            indices = Indices(names)
-        if isinstance(names, Indices):
-            indices = names
-        self.equations[indices] = value
 
-    def __getitem__(self, names):
-        """
-        Get an index representation of a variable as a sequence of indices.
-        """
-        if isinstance(names, str):
-            names = tuple([s.strip() for s in names.split(",") if s.strip() != ""])
-        return Indices(names)
-    
-    def get_realisation(self, name):
-        """
-        Get a representation of a realisation of a variable.
-        """
-        return Indices([name]).value()
-    
-    def get_size(self, name):
-        """
-        Get the size of a variable.
-        """
-        return Size(name)
+class Equation:
+    def __init__(self, lhs, rhs):
+        self.lhs = lhs
+        self.rhs = rhs
+    def __repr__(self):
+        return f"Equation({repr(self.lhs)}, {repr(self.rhs)})"
 
-    def __str__(self):
-        s = "\\begin{align*}\n"
-        for k, v in self.equations.items():
-            s += k.to_latex() + " &= " + v.to_latex() + " \\\\\n"
-        s += "\\end{align*}"
+    def make_apply(self):
+        tensors = self.rhs.tensors()
+        s = ""
         return s
+
+    def tensors(self):
+        tensors = []
+        tensors.extend(self.lhs.tensors())
+        tensors.extend(self.rhs.tensors())
+        return tensors
+
     
-"""
-$$
-\begin{align*}
-q_{b h t c} &= t \\
-k_{b h t c} &= t \\
-v_{b h t c} &= x_{b t c} \\
-a_{b h t_{0} t_{1}} &= \left|k_{t_{0} c}-k_{t_{1} c}\right| \leq 1 \\
-u^2_{b t_{0} c} &= U_{c_{0} c_{1}} \cdot a_{h t_{0} t_{1}} \cdot v_{h t_{1} c_{0}} \\
-u^1_{b t c} &= x_{b t c}+u^1_{b t c} \\
-u^0_{b t c} &= \left(\frac{\gamma_{c} \cdot \left(u^1_{b t c}-\mu_{c}\right)}{\sigma_{c}}\right)+\beta_{c} \\
-\mu_{c} &= \left(\frac{1_{b t}}{\|b\| \cdot \|t\|}\right) \cdot u^1_{b t c} \\
-\sigma_{c} &= \left(\left(\frac{1_{b t}}{\|b\| \cdot \|t\|}\right) \cdot \left(u^1_{b t c}-\mu_{c}\right)^{2}\right)^{0.5} \\
-z_{b c} &= \left(\frac{\gamma_{c} \cdot \left(z_{b c}-\mu_{c}\right)}{\sigma_{c}}\right)+\beta_{c} \\
-\end{align*}
-$$
+class Function:
+    def __init__(self, name, arguments, body):
+        self.name = name
+        self.arguments = arguments
+        self.body = body
+    def __repr__(self):
+        return f"Function({self.name}, {', '.join(repr(a) for a in self.arguments)}, {repr(self.body)})"
+    def pystr(self):
+        return f"def {self.name}({', '.join(a.pystr() for a in self.arguments)}):\n{self.body.pystr()}"
+    def tensors(self):
+        return []
+
+class Equations:
+    def __init__(self, *equations):
+        self.equations = [equations for equations in equations if isinstance(equations, Equation)]
+        self.returns = [equations for equations in equations if isinstance(equations, Return)]
+        self.functions = [equations for equations in equations if isinstance(equations, Function)]
+    def __repr__(self):
+        return f"Equations({', '.join(repr(e) for e in self.equations)})"
+    def make_apply(self):
+        s = ""
+        for e in self.equations:
+            s += e.make_apply() + "\n"
+        return s
+
+    def tensors(self):
+        tensors = []
+        for e in self.equations:
+            tensors.extend(e.lhs.tensors())
+            tensors.extend(e.rhs.tensors())
+        return tensors
+
+
+def run_tree(tree):
+    if hasattr(tree, "data"):
+        if tree.data == 'start':
+            return run_tree(tree.children[0])
+        elif tree.data == 'body':
+            return Equations(*[run_tree(e) for e in tree.children])
+        elif tree.data == 'parameter_tuple':
+            return [run_tree(e) for e in tree.children]
+        elif tree.data == 'statement':
+            return run_tree(tree.children[0])
+        elif tree.data == 'return':
+            return Return(*[run_tree(e) for e in tree.children])
+        elif tree.data == 'function':
+            return Function(run_tree(tree.children[0]), run_tree(tree.children[1]), run_tree(tree.children[2]))
+        elif tree.data == 'equation':
+            lhs = run_tree(tree.children[0])
+            rhs = run_tree(tree.children[1])
+            return Equation(lhs, rhs)
+        elif tree.data == 'expression':
+            return run_tree(tree.children[0])
+        elif tree.data == 'sum':
+            if len(tree.children) == 0:
+                return Number(0)
+            elif len(tree.children) == 1:
+                return run_tree(tree.children[0])
+            else:
+                return Sum(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'sum_term':
+            return run_tree(tree.children[0])
+        elif tree.data == 'sub_term':
+            return Product(run_tree(tree.children[0]), Number(-1))
+        elif tree.data == 'product':
+            if len(tree.children) == 0:
+                return Number(1)
+            elif len(tree.children) == 1:
+                return run_tree(tree.children[0])
+            else:
+                return Product(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'prod_term':
+            return run_tree(tree.children[0])
+        elif tree.data == 'div_term':
+            return Power(run_tree(tree.children[0]), Number(-1))
+        elif tree.data == 'factor':
+            return run_tree(tree.children[0])
+        elif tree.data == 'power':
+            return Power(run_tree(tree.children[0]), run_tree(tree.children[1]))
+        elif tree.data == 'function_call':
+            name = run_tree(tree.children[0])
+            args = [run_tree(t) for t in tree.children[1:]]
+            return FunctionCall(name, *args)
+        elif tree.data == 'paren_expr':
+            return run_tree(tree.children[0])
+        elif tree.data == 'tensor':
+            return Tensor(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'identity_tensor':
+            return IdentityTensor(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'value':
+            return run_tree(tree.children[0])
+        elif tree.data == 'tensor':
+            return Tensor(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'index':
+            name = run_tree(tree.children[0])
+            if len(tree.children) > 1:
+                idx = run_tree(tree.children[1]).value
+            else:
+                idx = None
+            return Index(name, idx)
+    elif tree.type == 'PYATTR':
+        return tree.value
+    elif tree.type == 'IDENTIFIER':
+        return tree.value
+    elif tree.type == 'INDEX_IDENTIFIER':
+        return tree.value
+    elif tree.type == 'LETTER':
+        return tree.value
+    elif tree.type == 'NUMBER':
+        return Number(tree.value)
+    raise ValueError(f"Unknown tree: {tree}")
+    
+
+
+# eqs = run_tree(tree)
+# print(eqs)
+# print(eqs.make_apply())
+# print(eqs.tensors())
+
+def get_transexpand_and_collapse_instructions(eq):
+    ordered_indices = []
+    lhs_tensor = eq.lhs.tensors()[0]
+    for index in lhs_tensor.nonleading_indices():
+        ordered_indices.append(index)
+    for tensor in eq.rhs.tensors():
+        for index in tensor.nonleading_indices():
+            if index not in ordered_indices:
+                ordered_indices.append(index)
+
+    lhs_indices = list(lhs_tensor.nonleading_indices())
+    dimensions_for_final_collapse_to_lhs = []
+    for i, index in enumerate(ordered_indices):
+        if index not in lhs_indices:
+            dimensions_for_final_collapse_to_lhs.append(i)
+
+    dimensions_for_transpose_and_expand = {}
+    for tensor in eq.rhs.tensors():
+        dims = []
+        current_indices = tensor.nonleading_indices()
+        for index in ordered_indices:
+            if index in current_indices:
+                dims.append(current_indices.index(index))
+            else:
+                dims.append(None)
+        dimensions_for_transpose_and_expand[tensor] = dims
+    return dimensions_for_transpose_and_expand, dimensions_for_final_collapse_to_lhs
+
+
+def transexpand(tensor, dims):
+    """
+    Combines transpose and expand_dims.
+
+    >>> x = np.array([[1, 2, 3],[4, 5, 6]])
+    >>> x.shape
+    (2, 3)
+    >>> transexpand(x, [1, None, 0]).shape
+    (3, 1, 2)
+    """
+    numbered_dims = [dim for dim in dims if dim is not None]
+    if set(numbered_dims) - {None} != set(range(tensor.ndim)):
+        raise TypeError(f"transpose permutation isn't a permutation of operand dimensions, got permutation {dims} for operand with shape {tensor.shape}.")
+    return tensor.transpose(numbered_dims).__getitem__(tuple(None if dim is None else slice(None) for dim in dims))
+
+def codegen_transexpand(tensor_name, dims):
+    """
+    >>> codegen_transexpand("x", [1, None, 0])
+    'x = x.transpose(1, 0)[:, None, :]'
+    """
+    s = ""
+    s += tensor_name
+    numbered_dims = tuple(dim for dim in dims if dim is not None)
+    if numbered_dims != tuple(range(len(numbered_dims))):
+        s += f".transpose({numbered_dims})"
+    at_least_one_expansion = False
+    for dim in dims:
+        if dim is None:
+            at_least_one_expansion=True
+    if at_least_one_expansion:
+        index_str = ', '.join("None" if dim is None else ":" for dim in dims)
+        s += f"[{index_str}]" if index_str else ""
+    return s
+
+def codegen_collapse(tensor_name, dims, keepdims=False):
+    """
+    >>> codegen_collapse("x", [0, -1])
+    'x = np.sum(x, axis=(0, -1))'
+    """
+    return f"{tensor_name}.sum(axis={dims}{', keepdims=True' if keepdims else ''})"
+
+# def construct_equation(eq, parameter_tensors=None):
+#     """
+#     >>> eq = Equation(Tensor(Index('y', None), Index('b', None), Index('i', None)), Product(Tensor(Index('w', None), Index('i', 1), Index('i', None)), Tensor(Index('x', None), Index('b', None), Index('i', 1))))
+#     >>> construct_equation(eq)
+#     'y_b_i = (w_i_i1.transpose(1, 0)[None, :, :] * x_b_i1.transpose(0, 1)[:, None, :]).sum(axis=(1,))'
+#     """
+#     transpand_dims, collapse_dims = get_transexpand_and_collapse_instructions(eq)
+    
+#     symbols = {
+#         Sum: {'symbol': '+', 'is_pycall': False, 'precedence': 4},
+#         Product: {'symbol': '*', 'is_pycall': False, 'precedence': 3},
+#         Power: {'symbol': '**', 'is_pycall': False, 'precedence': 2},
+#         FunctionCall: {'symbol': '', 'is_pycall': True, 'precedence': 1},
+#     }
+#     def helper(e, prev_precedence):
+#         if isinstance(e, Number):
+#             return str(e.value)
+#         elif isinstance(e, Tensor):
+#             tensor_string = e.pystr()
+#             if e in parameter_tensors:
+#                 tensor_string = f"params['{tensor_string}']"
+#             return codegen_transexpand(tensor_string, transpand_dims[e])
+#         symbol_data = symbols[type(e)]
+#         if symbol_data['is_pycall']:
+#             return f"{e.name}({', '.join(helper(child, symbol_data['precedence']) for child in e.children())})"
+#         else:
+#             if prev_precedence < symbol_data['precedence']:
+#                 return f"({helper(e, symbol_data['precedence'])})"
+#             else:
+#                 if isinstance(e, Sum):
+#                     ss = []
+#                     for child in e.children():
+#                         s = f"({helper(child, symbol_data['precedence'])})"
+#                         s = codegen_collapse(s, collapse_dims, keepdims=True)
+#                         ss.append(s)
+#                     return symbol_data['symbol'].join(ss)
+#                 return symbol_data['symbol'].join(helper(child, symbol_data['precedence']) for child in e.children())
+#     return f"{eq.lhs.pystr()} = {codegen_collapse('(' + helper(eq.rhs, 0) + ')', collapse_dims)}"
+
+def construct_equation(eq, parameter_tensors=None, sizes_required=None):
+    """
+    >>> eq = Equation(Tensor(Index('y', None), Index('i', 1)), Sum(Product(Tensor(Index('w', None), Index('i', 1), Index('i', 2)), Tensor(Index('x', None), Index('i', 2))), Tensor(Index('b', None), Index('i', 1))))
+    >>> construct_equation(eq)
+    'y_1 = np.einsum("ij, j->i", w_i_i, x_i) + b_i'
+    """
+
+    symbols = {
+        Sum: {'symbol': ' + ', 'is_pycall': False, 'precedence': 4},
+        Product: {'symbol': '*', 'is_pycall': False, 'precedence': 10},
+        Power: {'symbol': '**', 'is_pycall': False, 'precedence': 2},
+        FunctionCall: {'symbol': '', 'is_pycall': True, 'precedence': 10},
+    }
+
+    output_tensor = eq.lhs
+
+    def helper(eq, prev_precedence, outer_indices):
+        if isinstance(eq, Number):
+            return str(eq.value), [], {'is_tensor': False, 'collapsable': True}
+        elif isinstance(eq, Tensor):
+            tensor_string = eq.pystr()
+            if eq in parameter_tensors:
+                tensor_string = f"params['{tensor_string}']"
+            return tensor_string, eq.nonleading_indices(), {'is_tensor': True, 'collapsable': True}
+        elif isinstance(eq, IdentityTensor):
+            immediately_collapsable = [index.basename() for index in set(eq.indices) - set(outer_indices)]
+            immediately_collapsable_str = "*".join(immediately_collapsable) if immediately_collapsable else None
+            if sizes_required is not None:
+                sizes_required.update(immediately_collapsable)
+            collapse_later = [index for index in set(eq.indices) if index in outer_indices]
+            return immediately_collapsable_str, collapse_later, {'is_tensor': False, 'collapsable': True}
+        elif symbols[type(eq)]['precedence'] > prev_precedence:
+            s, output_index, hret = helper(eq, symbols[type(eq)]['precedence'], outer_indices)
+            return f"({s})", output_index, hret
+        elif isinstance(eq, Product):
+            def get_all_indices(expression):
+                indices = []
+                for child in expression.children():
+                    if isinstance(child, Tensor):
+                        indices.extend(child.nonleading_indices())
+                    elif isinstance(child, (Sum, Product, Power, FunctionCall)):
+                        indices.extend(get_all_indices(child))
+                return indices
+            child_cumulative_indices = [get_all_indices(child) for child in eq.children()]
+            all_child_indices = set()
+            for child_cumulative_indices_ in child_cumulative_indices:
+                all_child_indices.update(child_cumulative_indices_)
+            outer_and_child_indices = all_child_indices.union(outer_indices)
+            child_strings = []
+            child_output_indices = []
+            output_index = []
+            is_tensor = False
+            collapsable = False
+            hdicts = []
+            for child in eq.children():
+                outer_and_other_child_indices = set(outer_indices)
+                for child2 in eq.children():
+                    if child2 is not child:
+                        outer_and_other_child_indices.update(get_all_indices(child2))
+                child_string, child_output_index, hdict = helper(child, symbols[type(eq)]['precedence'], outer_and_other_child_indices)
+                if child_string:
+                    child_strings.append(child_string)
+                    child_output_indices.append(child_output_index)
+                    hdicts.append(hdict)
+                if hdict['collapsable']:
+                    for index in child_output_index:
+                        if index in outer_indices and index not in output_index:
+                            output_index.append(index)
+                is_tensor = is_tensor or hdict['is_tensor']
+                collapsable = collapsable or hdict['collapsable']
+            output_index = [index for index in output_tensor.nonleading_indices() if index in output_index] + [index for index in output_index if index not in output_tensor.nonleading_indices()]
+            all_child_output_indices = set()
+            for child_output_indices_ in child_output_indices:
+                all_child_output_indices.update(child_output_indices_)
+            input_and_output_indices = all_child_output_indices.union(output_index)
+            # Assign each index a letter
+            index_letters = {}
+            n_dupes = 0
+            for index in input_and_output_indices:
+                if index.basename()[0] in index_letters.values():
+                    index_letters[index] = string.ascii_lowercase[n_dupes]
+                    n_dupes += 1
+                else:
+                    index_letters[index] = index.basename()[0]
+            einstring_left = []
+            tensor_child_strings = []
+            nontensor_child_strings = []
+            for child_string, indices, hdict in zip(child_strings, child_output_indices, hdicts):
+                if indices is not None and hdict['is_tensor']:
+                    einindex = ""
+                    for index in indices:
+                        einindex += index_letters[index]
+                    einstring_left.append(einindex)
+                if hdict['is_tensor']:
+                    tensor_child_strings.append(child_string)
+                else:
+                    nontensor_child_strings.append(child_string)
+            einstring_right = "".join(index_letters[index] for index in output_index)
+            einstring = ",".join(s for s in einstring_left) + "->" + einstring_right
+            return f"{''.join('(' + s + ')*' for s in nontensor_child_strings)}jnp.einsum('{einstring}', {', '.join(tensor_child_strings)})", output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
+        elif isinstance(eq, (Sum, Power)):
+            child_strings = []
+            child_output_indices = []
+            output_index = []
+            is_tensor = False
+            collapsable = False
+            for child in eq.children():
+                child_string, child_output_index, hdict = helper(child, symbols[type(eq)]['precedence'], outer_indices)
+                if child_string:
+                    child_strings.append(child_string)
+                    child_output_indices.append(child_output_index)
+                # if hdict['collapsable']:
+                for index in child_output_index:
+                    # if index in outer_indices and index not in output_index:
+                    if index not in output_index:
+                        output_index.append(index)
+                is_tensor = is_tensor or hdict['is_tensor']
+                collapsable = collapsable or hdict['collapsable']
+            child_strings_transexpanded = []
+            for child_string, child_output_indices in zip(child_strings, child_output_indices):
+                if child_output_indices:
+                    child_output_indices_pos = {index: i for i, index in enumerate(child_output_indices)}
+                    transexpand_dims = [child_output_indices_pos[index] if index in child_output_indices_pos else None for index in output_index]
+                    child_strings_transexpanded.append(codegen_transexpand(child_string, transexpand_dims))
+                else:
+                    child_strings_transexpanded.append(child_string)
+            return symbols[type(eq)]['symbol'].join(child_strings_transexpanded), output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
+        elif isinstance(eq, FunctionCall):
+            child_strings = []
+            child_output_indices = []
+            is_tensor = False
+            collapsable = False
+            for child in eq.children():
+                child_string, child_output_index, hdict = helper(child, symbols[type(eq)]['precedence'], outer_indices)
+                if child_string:
+                    child_strings.append(child_string)
+                    child_output_indices.append(child_output_index)
+                is_tensor = is_tensor or hdict['is_tensor']
+                collapsable = collapsable or hdict['collapsable']
+            # TODO: this is a dodgy way of assuming the output shape
+            output_index = child_output_indices[0]
+            return f"{eq.name}({', '.join(child_strings)})", output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
+        else:
+            raise ValueError(f"Unknown expression type {type(eq)}")
+        raise ValueError(f"This should never happen; we should have handled all cases.")
+
+    outer_indices = [index for index in eq.lhs.nonleading_indices()]
+    rhs_string = helper(eq.rhs, math.inf, outer_indices)[0]
+    return f"{eq.lhs.pystr()} = {rhs_string}"
+
+        
+def construct_equations(eqs, parameter_tensors=None, sizes_required=None):
+    return "\n".join(construct_equation(eq, parameter_tensors=parameter_tensors, sizes_required=sizes_required) for eq in eqs.equations)
+
+def split_tensors(eqs, inputs):
+    parameter_tensors = []
+    input_tensors = []
+    seen_tensors = set()
+    for eq in eqs.equations:
+        for tensor in eq.rhs.tensors():
+            if tensor.canonical_pyname() not in seen_tensors:
+                if tensor.leading_index().basename() in inputs:
+                    input_tensors.append(tensor)
+                else:
+                    parameter_tensors.append(tensor)
+            seen_tensors.add(tensor.canonical_pyname())
+        seen_tensors.add((eq.lhs.tensors())[0].pystr())
+    return parameter_tensors, input_tensors
+
+def split_indices(parameter_tensors, input_tensors):
+    input_indices = set()
+    for tensor in input_tensors:
+        input_indices.update([index.basename() for index in tensor.nonleading_indices()])
+    parameter_indices = set()
+    for tensor in parameter_tensors:
+        parameter_indices.update([index.basename() for index in tensor.nonleading_indices()])
+    parameter_indices -= input_indices
+    return parameter_indices, input_indices
+
+def construct_jax_module_from_equations(name, eqs, inputs, jit):
+    parameter_tensors, input_tensors = split_tensors(eqs, inputs)
+    parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
+    parameter_arg_list = ', '.join(index for index in parameter_indices)
+    parameter_kwarg_list = ', '.join(f"{index}={index}" for index in parameter_indices)
+    s = f"class {name}:\n"
+    s +=f"    def __init__(self, {parameter_arg_list}):\n"
+    dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
+    s += f"        self.old_init = self.init\n"
+    s += f"        self.init = lambda *args, **kwargs: self.old_init(*args, {parameter_kwarg_list}, **kwargs)\n"
+    s += "\n"
+    s += "    " + construct_jax_init_from_equations(eqs, inputs).replace("\n", "\n    ")
+    s += "\n"
+    s += "    @staticmethod\n"
+    s += "    " + construct_jax_apply_from_equations(eqs=eqs, inputs=inputs, jit=jit).replace("\n", "\n    ")
+    return s
+
+def construct_jax_init_from_equations(eqs, inputs):
+    parameter_tensors, input_tensors = split_tensors(eqs, inputs)
+    parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
+    s = ""
+    s +="@staticmethod\n"
+    s += f"def init(key, {''.join(index + ', ' for index in list(input_indices) + list(parameter_indices))}**kwargs):\n"
+    s += f"    keys = jax.random.split(key, {len(parameter_tensors)})\n"
+    longest_name = max(len(tensor.canonical_pyname()) for tensor in parameter_tensors)
+    tensor_defs = []
+    for i, tensor in enumerate(parameter_tensors):
+        shape_string = "[" + ', '.join(index.basename() for index in tensor.nonleading_indices()) + "]"
+        tensor_defs.append({
+            "name": tensor.canonical_pyname(),
+            "key_name": f'"{tensor.canonical_pyname()}": ',
+            "value": f"jax.random.normal(keys[{i}], shape={shape_string})"})
+    max_name_len = max(len(tensor_def['key_name']) for tensor_def in tensor_defs)
+    param_dict_inner_str = "        " + ",\n        ".join(tensor_def['key_name'].ljust(max_name_len) + tensor_def['value'] for tensor_def in tensor_defs)
+    s += f"    return {{\n{param_dict_inner_str}\n    }}\n"
+    return s
+
+def construct_jax_apply_from_equations(eqs, inputs, jit=True):
+    parameter_tensors, input_tensors = split_tensors(eqs, inputs)
+    parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
+    input_tensor_names = [tensor.pystr() for tensor in input_tensors]
+    parameter_tensor_names = [tensor.pystr() for tensor in parameter_tensors]
+    s = ""
+    # s +=f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors] + ['None' for _ in parameter_tensors])}))\n"
+    s += "@jit\n" if jit else ""
+    s +=f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors])}, None))\n"
+    s += f"def apply({''.join([name + ', ' for name in input_tensor_names])}params):\n"
+    # Indent
+    sizes_required = set()
+    eq_string = construct_equations(eqs, parameter_tensors, sizes_required=sizes_required).replace("\n", "\n    ")
+    if len(sizes_required)>0:
+        sizes = []
+        for index_basename in sizes_required:
+            break_flag = False
+            for tensor in input_tensors:
+                for i, index in enumerate(tensor.nonleading_indices()):
+                    if index.basename() == index_basename:
+                        sizes.append(f"{tensor.pystr()}.shape[{i}]")
+                        break_flag = True
+                        break
+                if break_flag:
+                    break
+            if break_flag:
+                continue
+            for tensor in parameter_tensors:
+                for i, index in enumerate(tensor.nonleading_indices()):
+                    if index.basename() == index_basename:
+                        sizes.append(f"params['{tensor.canonical_pyname()}'].shape[{i}]")
+                        break_flag = True
+                        break
+                if break_flag:
+                    break
+            if not break_flag:
+                raise ValueError(f"Could not find index {index_basename} in {input_tensors + parameter_tensors}")
+        s += "    " + ", ".join(sizes_required) + " = " + ", ".join(sizes) + "\n"
+    s += "    " + eq_string + "\n"
+    s += "    " + eqs.returns[0].pystr()
+    return s
+
+def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True):
+    s = []
+    functions = body.functions
+    leftover_expressions = body
+    for function in functions:
+        s.append(construct_jax_module_from_equations(function.name, function.body, function.arguments, jit=jit))
+    s = '\n\n\n'.join(s)
+    s += construct_jax_module_from_equations(main_name, leftover_expressions, main_inputs if main_inputs is not None else [], jit=jit) if leftover_expressions.returns else ""
+    return s
+
+# print(construct_jax_module_from_equations("TestModule", eqs, "x", False))
+
+def jax_codegen(s, module_name="main", main_inputs=None, jit=True):
+    tree = l.parse(s)
+    eqs = run_tree(tree)
+    c = construct_jax_modules(eqs, main_inputs, jit=jit)
+    return c
+
+def build_jax_module(s, jit=True):
+    tree = l.parse(s)
+    eqs = run_tree(tree)
+    c = construct_jax_modules(eqs, jit=jit)
+    exec(c)
+    module_names = [function.name for function in eqs.functions]
+    return eval(f"{', '.join(module_names)}")
+
+
+# s = """
+# y i = w i j * x i + b i;
+# return y i;
+# """
+
+# s = """
+# y.i = w.i.j * x.i + b.i;
+# return y i;
+# """
+
+# s = """
+# y,i = w,i,j * x,i + b,i;
+# return y,i;
+# """
+
+# s = """
+# y[i] = w[i,j] * x[i] + b[i]
+# return y[i]
+# """
+
+
+# s = """
+# y[i] = w[i j] * x[i] + b[i];
+# return y[i];
+# """
+
+s = """
+function Linear(x)
+    y[i] = (w[i,j] * x[i])*m[i] + b[i] + c[j]
+    return y[i]
+end
 """
 
-k = 1
-ie = IndexEquations()
-v = Realised
-s = Size
-ie['q,b,h,t,c'] = v('t')
-ie['k,b,h,t,c'] = v('t')
-ie['v,b,h,t,c'] = ie['x,b,t,c']
-ie['a','b','h',('t',0), ('t',1)] = abs(ie['k',('t',0),'c'] - ie['k',('t',1),'c']) <= k
-ie["u^2",'b',('t',0),'c'] = ie['U',('c',0),('c',1)] * ie['a','h',('t',0),('t',1)] * ie['v','h',('t',1),('c',0)]
-ie["u^1",'b','t','c'] = ie['x','b','t','c'] + ie["u^1",'b','t','c']
-ie["u^0",'b','t','c'] = ie['\\gamma','c'] * (ie['u^1','b','t','c'] - ie['\\mu','c']) / ie['\\sigma','c'] + ie['\\beta','c']
-ie['\\mu','c'] = ie['1','b','t'] / (s('b') * s('t')) * ie["u^1",'b','t','c']
-ie['\\sigma','c'] = (ie['1','b','t'] / (s('b') * s('t')) * (ie["u^1",'b','t','c'] - ie['\\mu','c']) ** 2) ** 0.5
-ie['z','b','c'] = ie['\\gamma','c'] * (ie['z','b','c'] - ie['\\mu','c']) / ie['\\sigma','c'] + ie['\\beta','c']
+s = """
+function Linear(x)
+    z[o] = w[o,i] * x[i] + b[o] + 1[i] + x[i]*1[o]
+    return z[o]
+end
+"""
 
-display(Math(str(ie)))
-# print(str(ie))
+s = """
+function Linear(x)
+    z[o] = w[o,i] * x[i] + b[o] + 1[o] + 1[i] + 1[o,i] + x[i]*1[o,i] + x[i]*1[o]
+    return z[o]
+end
+"""
+
+s = """
+function MultiheadSelfAttention(x)
+    x[t,i] = x[t,i] * gx[i] * (x[t,i_1]^2 * 1[i_1] / (x[t,i_2] * 1[i_2]))^0.5
+    q[h,t,j] = q[h,j,i] * x[t,i]
+    k[h,t,j] = k[h,j,i] * x[t,i]
+    v[h,t,j] = v[h,j,i] * x[t,i]
+    a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
+    u[t,k] = activation(wu[h,j,k] * a[h,t,t_2] * v[h,t_2,j] + bu[k])
+    z[t,i] = wz[i,k] * u[t,k] + bz[i]
+    z[t,i] = z[t,i] * gz[i] * (z[t,i]^2 * 1[i] / (z[t,i] + 1[i]))
+    return z[t,i]
+end
+"""
+
+if __name__ == "__main__":
+    print(jax_codegen(s))
+
+# function MultiheadSelfAttention(x)
+#     x[t,i] = x[t,i] * gx[i]
+#     q[h,t,j] = q[h,j,i] * x[t,i]
+#     k[h,t,j] = k[h,j,i] * x[t,i]
+#     v[h,t,j] = v[h,j,i] * x[t,i]
+#     a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
+#     u[t,k] = activation(wu[h,j,k] * a[h,t,t_2] * v[h,t_2,j] + bu[k])
+#     z[t,i] = wz[t,k] * u[t,k] + bz[i]
+#     return z[t,i]
+# end
+# """
+
+# print(jax_codegen(s))
+# print(construct_jax_modules(run_))
+
+
+
+
+# print_tests()

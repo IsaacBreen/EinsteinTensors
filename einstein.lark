@@ -1,0 +1,57 @@
+start: body
+
+body: statement+
+
+statement: (return | equation | function) ("\n" | ";")
+
+return: "return" expression ("," expression)*
+equation: value "=" expression
+function: "function" IDENTIFIER parameter_tuple body "end"
+parameter_tuple: "(" (IDENTIFIER ("," IDENTIFIER)*)? ")"
+
+expression: sum
+sum: product (sum_term | sub_term)*
+sum_term: "+" product
+sub_term: "-" product
+product: factor (prod_term | div_term)*
+prod_term: "*" factor
+div_term: "/" factor
+factor: power | value
+power: value ("^" value)
+value   : PYATTR "(" expression ")" -> function_call
+        | "(" expression ")"            -> paren_expr
+        | tensor
+        | identity_tensor
+        | NUMBER
+tensor: index "[" index ("," index)* "]"
+identity_tensor: "1" "[" index ("," index)* "]"
+index: INDEX_IDENTIFIER ("_" NUMBER)?
+PYATTR: IDENTIFIER ("." IDENTIFIER)*
+INDEX_IDENTIFIER: LETTER (LETTER|NUMBER)*
+IDENTIFIER: LETTER (LETTER|NUMBER|"_")*
+LETTER: "a".."z" | "A".."Z"
+NUMBER: INTEGER | FLOAT
+INTEGER: "0".."9"+
+FLOAT: "0".."9"+ "." "0".."9"+
+
+WHITESPACE: (" " | "\n")+
+%ignore WHITESPACE
+
+
+// sum: product                -> product
+//     | sum "+" product       -> add
+//     | sum "-" product       -> sub
+// product: factor             -> factor
+//     | product "*" factor    -> mul
+//     | product "/" factor    -> div
+// factor: power
+// power: value ("^" value)*   -> exp
+// value   : IDENTIFIER "(" expression ")" -> function_call
+//         | "(" expression ")"            -> paren_expr
+//         | tensor                        -> tensor
+//         | NUMBER
+// tensor: index+
+// index: LETTER ("_" NUMBER)?
+// IDENTIFIER: LETTER (LETTER|NUMBER)*
+// LETTER: "a".."z"
+// NUMBER: "0".."9"+
