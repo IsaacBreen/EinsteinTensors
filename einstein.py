@@ -738,44 +738,46 @@ def build_jax_module(s, jit=True):
 
 
 # s = """
-# y[i] = w[i j] * x[i] + b[i];
-# return y[i];
+# function Linear(x)
+#     y[j] = w[i,j] * x[i] + b[j]
+#     return y[j]
+# end
 # """
 
 s = """
 function Linear(x)
-    y[i] = (w[i,j] * x[i])*m[i] + b[i] + c[j]
-    return y[i]
+    y[o] = x[i] * w[i,j] * w[j,o]
+    return y[o]
 end
 """
 
-s = """
-function Linear(x)
-    z[o] = w[o,i] * x[i] + b[o] + 1[i] + x[i]*1[o]
-    return z[o]
-end
-"""
+# s = """
+# function Linear(x)
+#     z[o] = w[o,i] * x[i] + b[o] + 1[i] + x[i]*1[o]
+#     return z[o]
+# end
+# """
 
-s = """
-function Linear(x)
-    z[o] = w[o,i] * x[i] + b[o] + 1[o] + 1[i] + 1[o,i] + x[i]*1[o,i] + x[i]*1[o]
-    return z[o]
-end
-"""
+# s = """
+# function Linear(x)
+#     z[o] = w[o,i] * x[i] + b[o] + 1[o] + 1[i] + 1[o,i] + x[i]*1[o,i] + x[i]*1[o]
+#     return z[o]
+# end
+# """
 
-s = """
-function MultiheadSelfAttention(x)
-    x[t,i] = x[t,i] * gx[i] * (x[t,i_1]^2 * 1[i_1] / (x[t,i_2] * 1[i_2]))^0.5
-    q[h,t,j] = q[h,j,i] * x[t,i]
-    k[h,t,j] = k[h,j,i] * x[t,i]
-    v[h,t,j] = v[h,j,i] * x[t,i]
-    a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
-    u[t,k] = activation(wu[h,j,k] * a[h,t,t_2] * v[h,t_2,j] + bu[k])
-    z[t,i] = wz[i,k] * u[t,k] + bz[i]
-    z[t,i] = z[t,i] * gz[i] * (z[t,i]^2 * 1[i] / (z[t,i] + 1[i]))
-    return z[t,i]
-end
-"""
+# s = """
+# function MultiheadSelfAttention(x)
+#     x[t,i] = x[t,i] * gx[i] * (x[t,i_1]^2 * 1[i_1] / (x[t,i_2] * 1[i_2]))^0.5
+#     q[h,t,j] = q[h,j,i] * x[t,i]
+#     k[h,t,j] = k[h,j,i] * x[t,i]
+#     v[h,t,j] = v[h,j,i] * x[t,i]
+#     a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
+#     u[t,k] = activation(wu[h,j,k] * a[h,t,t_2] * v[h,t_2,j] + bu[k])
+#     z[t,i] = wz[i,k] * u[t,k] + bz[i]
+#     z[t,i] = z[t,i] * gz[i] * (z[t,i]^2 * 1[i] / (z[t,i] + 1[i]))
+#     return z[t,i]
+# end
+# """
 
 if __name__ == "__main__":
     print(jax_codegen(s))
