@@ -202,12 +202,12 @@ class Equation:
         tensors.extend(self.rhs.tensors())
         return tensors
 
-    
+
 class Function:
     def __init__(self, name, arguments, body):
         self.name = name
         self.arguments = arguments
-        self.body = body
+        self.body = body                
     def __repr__(self):
         return f"Function({self.name}, {', '.join(repr(a) for a in self.arguments)}, {repr(self.body)})"
     def pystr(self):
@@ -215,11 +215,25 @@ class Function:
     def tensors(self):
         return []
 
+
 class Equations:
     def __init__(self, *equations):
         self.equations = [equations for equations in equations if isinstance(equations, Equation)]
         self.returns = [equations for equations in equations if isinstance(equations, Return)]
         self.functions = [equations for equations in equations if isinstance(equations, Function)]
+
+        if self.returns:
+            equations_map = {eq.lhs.canonical_pyname(): eq for eq in self.equations}
+            equation_names = [eq.lhs.canonical_pyname() for eq in self.equations]
+            def helper(expr):
+                if isinstance(expr, Tensor):
+                    return TensorAlias(expr, equations_map[expr.canonical_pyname()])
+                children = expr.children()
+                for i in range(len(children)):
+                    children[i] = helper(children[i])
+                return expr
+            self.deepreturns = Return(*(helper(val) for val in self.returns[0].values))
+
     def __repr__(self):
         return f"Equations({', '.join(repr(e) for e in self.equations)})"
     def make_apply(self):
@@ -234,6 +248,16 @@ class Equations:
             tensors.extend(e.lhs.tensors())
             tensors.extend(e.rhs.tensors())
         return tensors
+
+
+class TensorAlias:
+    def __init__(self, tensor, equation):
+        self.tensor = tensor
+        self.equation = equation
+    def __repr__(self):
+        return f"TensorAlias({self.tensor}, {self.equation})"
+    def tensors(self):
+        return [self.tensor] + self.equation.tensors()
 
 
 def run_tree(tree):
@@ -392,44 +416,6 @@ def codegen_collapse(tensor_name, dims, keepdims=False):
     """
     return f"{tensor_name}.sum(axis={dims}{', keepdims=True' if keepdims else ''})"
 
-# def construct_equation(eq, parameter_tensors=None):
-#     """
-#     >>> eq = Equation(Tensor(Index('y', None), Index('b', None), Index('i', None)), Product(Tensor(Index('w', None), Index('i', 1), Index('i', None)), Tensor(Index('x', None), Index('b', None), Index('i', 1))))
-#     >>> construct_equation(eq)
-#     'y_b_i = (w_i_i1.transpose(1, 0)[None, :, :] * x_b_i1.transpose(0, 1)[:, None, :]).sum(axis=(1,))'
-#     """
-#     transpand_dims, collapse_dims = get_transexpand_and_collapse_instructions(eq)
-    
-#     symbols = {
-#         Sum: {'symbol': '+', 'is_pycall': False, 'precedence': 4},
-#         Product: {'symbol': '*', 'is_pycall': False, 'precedence': 3},
-#         Power: {'symbol': '**', 'is_pycall': False, 'precedence': 2},
-#         FunctionCall: {'symbol': '', 'is_pycall': True, 'precedence': 1},
-#     }
-#     def helper(e, prev_precedence):
-#         if isinstance(e, Number):
-#             return str(e.value)
-#         elif isinstance(e, Tensor):
-#             tensor_string = e.pystr()
-#             if e in parameter_tensors:
-#                 tensor_string = f"params['{tensor_string}']"
-#             return codegen_transexpand(tensor_string, transpand_dims[e])
-#         symbol_data = symbols[type(e)]
-#         if symbol_data['is_pycall']:
-#             return f"{e.name}({', '.join(helper(child, symbol_data['precedence']) for child in e.children())})"
-#         else:
-#             if prev_precedence < symbol_data['precedence']:
-#                 return f"({helper(e, symbol_data['precedence'])})"
-#             else:
-#                 if isinstance(e, Sum):
-#                     ss = []
-#                     for child in e.children():
-#                         s = f"({helper(child, symbol_data['precedence'])})"
-#                         s = codegen_collapse(s, collapse_dims, keepdims=True)
-#                         ss.append(s)
-#                     return symbol_data['symbol'].join(ss)
-#                 return symbol_data['symbol'].join(helper(child, symbol_data['precedence']) for child in e.children())
-#     return f"{eq.lhs.pystr()} = {codegen_collapse('(' + helper(eq.rhs, 0) + ')', collapse_dims)}"
 
 def construct_equation(eq, parameter_tensors=None, sizes_required=None):
     """
@@ -688,6 +674,18 @@ def construct_jax_apply_from_equations(eqs, inputs, jit=True):
     s += "    " + eq_string + "\n"
     s += "    " + eqs.returns[0].pystr()
     return s
+
+def split_equations_along_index(eqs, split_index):
+    subgraphs = []
+    cache = {}
+    def helper(e, inputs, outputs, prev_has_index):
+        if e in cache:
+            return cache[e]['inputs'].extend(inputs), cache[e]['outputs'].extend(outputs)
+        if isinstance(e, Tensor) and (split_index in (i.basename() for i in e.nonleading_indices()) != prev_has_index):
+            cache[e] = {'inputs': inputs, 'outputs': outputs}
+            
+
+
 
 def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True):
     s = []
