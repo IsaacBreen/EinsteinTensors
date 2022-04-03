@@ -88,13 +88,14 @@ def combine_pytrees(tree1, tree2, max_level=-1):
 
 class Visitor:
     def __init__(self, 
-                before_callbacks=None, 
-                after_callbacks=None, 
-                direction="down", 
+                before_callbacks=None,
+                after_callbacks=None,
+                direction="down",
                 reversed=False, 
-                traversal_type="breadth-first", 
-                recursive=None, 
-                expand_tree_into_callbacks=False, 
+                traversal_type="breadth-first",
+                recursive=None,
+                expand_tree_into_callbacks=False,
+                trickle_up_accumulator=lambda **trickled_datas: trickled_datas,
                 get_children=lambda tree, **_: tree.children if hasattr(tree, "children") else []):
         if recursive is None:
             # If recursive is not specified, use recursion in depth-first traversa and no recursion in breadth-first traversal
@@ -127,6 +128,7 @@ class Visitor:
         self.traversal_type = traversal_type
         self.recursive = recursive
         self.expand_tree_into_callbacks = expand_tree_into_callbacks
+        self.trickle_up_accumulator = trickle_up_accumulator
         self.get_children = get_children
 
     def register(self, callback_function, i=-1):
@@ -146,49 +148,49 @@ class Visitor:
         if self.reversed:
             children = reversed(children)
         if self.direction == "down":
-            self.visit_downward_dfs(self, tree, children=children, trickled_data=trickled_data, metadata=metadata)
+            return self.visit_downward_dfs(tree, children=children, trickled_data=trickled_data, metadata=metadata)
         if self.direction=="up":
-            self.visit_upward_dfs(self, tree, trickled_data=trickled_data, metadata=metadata)
+            return self.visit_upward_dfs(tree, children=children, trickled_data=trickled_data, metadata=metadata)
 
 
-    def visit_downward_dfs(self, tree, children trickled_data=None, metadata=None):
+    def visit_downward_dfs(self, tree, children, trickled_data=None, metadata=None):
         # Downward DFS
-            # If direction is down, this node has already received the trickled data from above it
-            # and is ready to run its callbacks.
-            for callback in self.get_before_callbacks():
-                new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata)
-                if new_tree is not None:
-                    tree = new_tree
-            child_results = []
-            for child in children:
-                child_result = self.visit_recursive(child, trickled_data, metadata)
-                child_results.append(child_result)
-            for callback in self.get_after_callbacks():
-                new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata, child_results=child_results)
-                if new_tree is not None: 
-                    tree = new_tree
-            return tree
-    
-    def visit_upward_dfs(self, tree, trickled_data=None, metadata=None):
+        # If direction is down, this node has already received the trickled data from above it
+        # and is ready to run its callbacks.
+        for callback in self.get_before_callbacks():
+            new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata)
+            if new_tree is not None:
+                tree = new_tree
+        child_results = []
+        for child in children:
+            child_result = self.visit_recursive(child, trickled_data, metadata)
+            child_results.append(child_result)
+        for callback in self.get_after_callbacks():
+            new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata, child_results=child_results)
+            if new_tree is not None: 
+                tree = new_tree
+        return tree
+
+    def visit_upward_dfs(self, tree, children, trickled_data=None, metadata=None):
         # Upward DFS
-            # The current node needs to accumulate trickled data from its children before running
-            # its callbacks. Create a new trickle data accumulator for the children to populate.
-            for callback in self.get_before_callbacks():
-                new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata)
-                if new_tree is not None:
-                    tree = new_tree
-            trickled_data_accumulator = {}
-            child_results = []
-            for child in children:
-                trickled_data_from_child, child_result = self.visit_recursive(child, trickled_data=trickled_data, metadata=metadata)
-                trickled_data_accumulator = combine_pytrees(trickled_data_accumulator, trickled_data_from_child)
-                child_results.append(child_result)
-            trickled_data = combine_pytrees(trickled_data_accumulator, trickled_data)
-            for callback in self.get_after_callbacks():
-                new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata, child_results=child_results)
-                if new_tree is not None:
-                    tree = new_tree
-            return trickled_data, tree
+        # The current node needs to accumulate trickled data from its children before running
+        # its callbacks. Create a new trickle data accumulator for the children to populate.
+        for callback in self.get_before_callbacks():
+            new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata)
+            if new_tree is not None:
+                tree = new_tree
+        trickled_data_accumulator = {}
+        child_results = []
+        for child in children:
+            trickled_data_from_child, child_result = self.visit_recursive(child, trickled_data=trickled_data, metadata=metadata)
+            trickled_data_accumulator = combine_pytrees(trickled_data_accumulator, trickled_data_from_child)
+            child_results.append(child_result)
+        trickled_data = self.trickle_up_accumulator(**trickled_data)
+        for callback in self.get_after_callbacks():
+            new_tree = callback(tree=tree, trickled_data=trickled_data, metadata=metadata, child_results=child_results)
+            if new_tree is not None:
+                tree = new_tree
+        return trickled_data, tree
 
     def visit_nonrecursive(self, tree, trickled_data=None):
         assert self.direction=="down", "Cannot perform non-recursive traversal when traversing upwards"
