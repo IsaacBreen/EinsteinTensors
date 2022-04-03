@@ -98,7 +98,7 @@ class Visitor:
                 trickle_up_accumulator=lambda **trickled_datas: trickled_datas,
                 get_children=lambda tree, **_: tree.children if hasattr(tree, "children") else []):
         if recursive is None:
-            # If recursive is not specified, use recursion in depth-first traversa and no recursion in breadth-first traversal
+            # If recursive is not specified, use recursion in depth-first traversal and no recursion in breadth-first traversal
             recursive = traversal_type=="depth-first"
         elif recursive:
             assert traversal_type=="depth-first"
@@ -134,27 +134,22 @@ class Visitor:
     def register(self, callback_function, i=-1):
         self.before_callbacks.insert(i, callback_function)
 
-    def visit(self, tree, *args, **kwargs):
-        if self.recursive:
-            return self.visit_recursive(tree, *args, **kwargs)
-        else:
-            return self.visit_nonrecursive(tree, *args, **kwargs)
-
-    def visit_recursive(self, tree, trickled_data=None, metadata=None):
-        assert self.traversal_type=="depth-first", "Cannot perform recursive traversal when traversing in breadth-first order"
+    def visit(self, tree, trickled_data=None, metadata=None, **kwargs):
         trickled_data = deepcopy(trickled_data) if trickled_data is not None else {}
         metadata = deepcopy(metadata) if metadata is not None else {}
-        children = self.get_children(tree)
-        if self.reversed:
-            children = reversed(children)
-        if self.direction == "down" and self.traversal_type == "depth-first" and self.recursive:
-            return self.visit_downward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata)
-        if self.direction == "down" and not self.recursive:
-            return self.visit_downward_bfs(tree, trickled_data=trickled_data, metadata=metadata)
-        if self.direction=="up" and self.traversal_type == "depth-first" and self.recursive:
-            return self.visit_upward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata)
+        if self.recursive:
+            assert self.traversal_type=="depth-first", "Cannot perform recursive traversal when traversing in breadth-first order"
+            children = self.get_children(tree)
+            if self.reversed:
+                children = reversed(children)
+            if self.direction == "down":
+                return self.visit_downward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata, **kwargs)
+            if self.direction=="up":
+                return self.visit_upward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata, **kwargs)
+        else:
+            if self.direction == "down":
+                return self.visit_downward_nonrecursive(tree, trickled_data=trickled_data, metadata=metadata, **kwargs)
         raise Exception("Unsupported traversal type")
-
 
     def visit_downward_dfs_recursive(self, tree, children, trickled_data=None, metadata=None):
         # Downward DFS
@@ -195,10 +190,7 @@ class Visitor:
                 tree = new_tree
         return trickled_data, tree
 
-    def visit_nonrecursive(self, tree, trickled_data=None):
-        assert self.direction=="down", "Cannot perform non-recursive traversal when traversing upwards"
-        if trickled_data is None: trickled_data = {}
-        metadata = {}
+    def visit_downward_nonrecursive(self, tree, trickled_data=None, metadata=None):
         if self.traversal_type=="breadth-first":
             # Use a FILO queue to implement breadth-first traversal
             queue = LifoQueue()
@@ -284,13 +276,11 @@ arithmetic_node_names = ["sum", "product", "factor", "power", "value"]
 
 reconstructor = Reconstructor(parser)
 
-@dictionate_function
 @attrfilter(data="indices")
 def trickledown_tensor_indices(tree, trickled_data, **kwargs):
     for child in tree.children:
         trickled_data["outer_indices"].add(child)
 
-@dictionate_function
 @attrfilter(data="product")
 def trickledown_product_indices(tree, trickled_data, **kwargs):
     # print("In trickledown_product_indices")
@@ -298,11 +288,20 @@ def trickledown_product_indices(tree, trickled_data, **kwargs):
     print([reconstructor.reconstruct(index) for index in trickled_data["outer_indices"]])
     print()
 
+class CallbackPipeline:
+    def __init__(self, *callbacks):
+        self.callbacks = callbacks
+
+    def __call__(self, tree, *args, **kwargs):
+        for callback in self.callbacks:
+            tree = callback(tree, *args, **kwargs)
+        return tree
+
 
 trickledown_index_visitor = LarkVisitor(
     direction="down", 
     traversal_type="breadth-first",
-    after_callbacks=[dictionator, trickledown_tensor_indices, trickledown_product_indices, antidictionator],
+    after_callbacks=[trickledown_tensor_indices, trickledown_product_indices],
 )
 
 initial_trickled_data = {"outer_indices": set()}
