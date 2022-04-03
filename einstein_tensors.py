@@ -147,13 +147,16 @@ class Visitor:
         children = self.get_children(tree)
         if self.reversed:
             children = reversed(children)
-        if self.direction == "down":
-            return self.visit_downward_dfs(tree, children=children, trickled_data=trickled_data, metadata=metadata)
-        if self.direction=="up":
-            return self.visit_upward_dfs(tree, children=children, trickled_data=trickled_data, metadata=metadata)
+        if self.direction == "down" and self.traversal_type == "depth-first" and self.recursive:
+            return self.visit_downward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata)
+        if self.direction == "down" and not self.recursive:
+            return self.visit_downward_bfs(tree, trickled_data=trickled_data, metadata=metadata)
+        if self.direction=="up" and self.traversal_type == "depth-first" and self.recursive:
+            return self.visit_upward_dfs_recursive(tree, children=children, trickled_data=trickled_data, metadata=metadata)
+        raise Exception("Unsupported traversal type")
 
 
-    def visit_downward_dfs(self, tree, children, trickled_data=None, metadata=None):
+    def visit_downward_dfs_recursive(self, tree, children, trickled_data=None, metadata=None):
         # Downward DFS
         # If direction is down, this node has already received the trickled data from above it
         # and is ready to run its callbacks.
@@ -171,7 +174,7 @@ class Visitor:
                 tree = new_tree
         return tree
 
-    def visit_upward_dfs(self, tree, children, trickled_data=None, metadata=None):
+    def visit_upward_dfs_recursive(self, tree, children, trickled_data=None, metadata=None):
         # Upward DFS
         # The current node needs to accumulate trickled data from its children before running
         # its callbacks. Create a new trickle data accumulator for the children to populate.
@@ -297,13 +300,14 @@ def trickledown_product_indices(tree, trickled_data, **kwargs):
 
 
 trickledown_index_visitor = LarkVisitor(
-    direction="up", 
-    traversal_type="depth-first", 
+    direction="down", 
+    traversal_type="breadth-first",
     after_callbacks=[dictionator, trickledown_tensor_indices, trickledown_product_indices, antidictionator],
 )
 
 initial_trickled_data = {"outer_indices": set()}
 tree = trickledown_index_visitor.visit(tree, initial_trickled_data)
+print("Printing result")
 print(tree)
 
 
