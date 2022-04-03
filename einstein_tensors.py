@@ -145,8 +145,14 @@ class Visitor:
         children = self.get_children(tree)
         if self.reversed:
             children = reversed(children)
-        # Downward DFS
         if self.direction == "down":
+            self.visit_downward_dfs(self, tree, children=children, trickled_data=trickled_data, metadata=metadata)
+        if self.direction=="up":
+            self.visit_upward_dfs(self, tree, trickled_data=trickled_data, metadata=metadata)
+
+
+    def visit_downward_dfs(self, tree, children trickled_data=None, metadata=None):
+        # Downward DFS
             # If direction is down, this node has already received the trickled data from above it
             # and is ready to run its callbacks.
             for callback in self.get_before_callbacks():
@@ -162,8 +168,9 @@ class Visitor:
                 if new_tree is not None: 
                     tree = new_tree
             return tree
+    
+    def visit_upward_dfs(self, tree, trickled_data=None, metadata=None):
         # Upward DFS
-        elif self.direction=="up":
             # The current node needs to accumulate trickled data from its children before running
             # its callbacks. Create a new trickle data accumulator for the children to populate.
             for callback in self.get_before_callbacks():
@@ -182,7 +189,6 @@ class Visitor:
                 if new_tree is not None:
                     tree = new_tree
             return trickled_data, tree
-        raise NotImplementedError(f"Cannot perform {self.traversal_type} traversal when traversing {self.direction}")
 
     def visit_nonrecursive(self, tree, trickled_data=None):
         assert self.direction=="down", "Cannot perform non-recursive traversal when traversing upwards"
