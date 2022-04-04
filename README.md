@@ -2,7 +2,9 @@ NOTE: This is highly experimental. It is not guaranteed to work. However, I've f
 
 # Installation
 
-python -m pip install git+https://github.com/IsaacBreen/EinsteinTensors
+```bash
+pip install git+https://github.com/IsaacBreen/EinsteinTensors
+```
 
 # Einstein Tensors
 
@@ -17,7 +19,7 @@ Informally, the rules of the DSL are as follows:
 - When an index appears on the right-hand side of an assignment but not the left-hand side, this implies additive reduction.
     - E.g. if `X` is a 2D tensor (or a matrix), then `y[i] = X.reduce_sum(axis=0)` is equivalent to `y[i] = X[i,j]`.
 
-If you've used einsum before, you'll notice that the syntax is similar.
+If you like einsum, you'll love this library.
 
 # Examples
 
