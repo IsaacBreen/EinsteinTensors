@@ -36,22 +36,3 @@ FLOAT: "0".."9"+ "." "0".."9"+
 
 WHITESPACE: (" " | "\n")+
 %ignore WHITESPACE
-
-
-// sum: product                -> product
-//     | sum "+" product       -> add
-//     | sum "-" product       -> sub
-// product: factor             -> factor
-//     | product "*" factor    -> mul
-//     | product "/" factor    -> div
-// factor: power
-// power: value ("^" value)*   -> exp
-// value   : IDENTIFIER "(" expression ")" -> function_call
-//         | "(" expression ")"            -> paren_expr
-//         | tensor                        -> tensor
-//         | NUMBER
-// tensor: index+
-// index: LETTER ("_" NUMBER)?
-// IDENTIFIER: LETTER (LETTER|NUMBER)*
-// LETTER: "a".."z"
-// NUMBER: "0".."9"+
