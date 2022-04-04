@@ -1,5 +1,9 @@
 NOTE: This is highly experimental. It is not guaranteed to work. However, I've found it to be stable enough to use as a starting point in my own projects.
 
+# Installation
+
+python -m pip install git+https://github.com/IsaacBreen/EinsteinTensors
+
 # Einstein Tensors
 
 Einstein Tensors is a small DSL for writing neural networks more concisely. It compiles into efficient JAX code and takes care of a lot of things for you, including parameter initialization.
