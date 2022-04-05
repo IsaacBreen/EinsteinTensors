@@ -7,8 +7,9 @@ from jax import random
 from jax import jit, vmap, grad, jacobian
 import string
 import math
+from pathlib import Path
 
-l = Lark.open("src/einstein_tensors/einstein.lark")
+l = Lark.open(Path(__file__).parent / "einstein.lark")
 
 
 class Expression:

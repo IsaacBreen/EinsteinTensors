@@ -25,8 +25,6 @@ If you like einsum, you'll love this library.
 
 ## Linear layer
 
-### Code generation
-
 ```python
 from einstein_tensors import jax_codegen
 
@@ -65,8 +63,6 @@ class Linear:
 ```
 
 ## Multihead self-attention (transformer)
-
-### Code generation
 
 ```python
 from einstein_tensors import jax_codegen
@@ -123,8 +119,6 @@ class MultiheadSelfAttention:
         return z_t_i
 ```
 
-### Execution
-
 ```python
 import jax
 import jax.numpy as jnp
@@ -148,4 +142,4 @@ Output:
 
 # Motivation
 
-At their core, neural networks are remarkably simple. Even modern, state-of-the-art architectures such as the transformer can be [described mathematically in about half a page of A4 paper](https://johnthickstun.com/docs/transformers.pdf). Implementations, however, are often quite complex, with modern tensor libraries necessitating a lot of unnecessary code that distracts from elegant conceptual foundations. This library aims to make neural networks easier to write and more readable.
+At their core, neural networks are remarkably simple. Even modern, state-of-the-art architectures such as the transformer can be [described mathematically in about half a page of A4 paper](https://johnthickstun.com/docs/transformers.pdf). Implementations, however, are often quite complex, with modern tensor libraries necessitating a lot of unnecessary code that obfuscates the rather simple underlying concepts. This library aims to make neural networks easier to write and more readable.
