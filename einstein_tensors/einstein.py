@@ -635,12 +635,12 @@ def construct_jax_module_from_equations(name, eqs, inputs, jit):
     parameter_indices, input_indices = split_indices(
         parameter_tensors, input_tensors)
     parameter_arg_list = ', '.join(index for index in parameter_indices)
-    parameter_kwarg_list = ', '.join(f"{index}={index}" for index in parameter_indices) + ', '
+    parameter_kwarg_list = ''.join(f"{index}={index}, " for index in parameter_indices)
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
     dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
     s += f"        self.old_init = self.init\n"
-    s += f"        self.init = lambda *args, **kwargs: self.old_init(*args, {parameter_kwarg_list}, **kwargs)\n"
+    s += f"        self.init = lambda *args, **kwargs: self.old_init(*args, {parameter_kwarg_list} **kwargs)\n"
     s += "\n"
     s += "    " + \
         construct_jax_init_from_equations(eqs, inputs).replace("\n", "\n    ")
