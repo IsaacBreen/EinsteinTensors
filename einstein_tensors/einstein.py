@@ -149,6 +149,9 @@ class Number:
     def tensors(self):
         return []
 
+    def children(self):
+        return []
+
 
 class Identifier:
     def __init__(self, name):
