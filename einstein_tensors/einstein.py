@@ -635,8 +635,7 @@ def construct_jax_module_from_equations(name, eqs, inputs, jit):
     parameter_indices, input_indices = split_indices(
         parameter_tensors, input_tensors)
     parameter_arg_list = ', '.join(index for index in parameter_indices)
-    parameter_kwarg_list = ', '.join(
-        f"{index}={index}" for index in parameter_indices)
+    parameter_kwarg_list = ', '.join(f"{index}={index}" for index in parameter_indices) + ', '
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
     dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
@@ -764,3 +763,9 @@ def make_jax_module(s, jit=True):
     exec(c)
     module_names = [function.name for function in eqs.functions]
     return eval(f"{', '.join(module_names)}")
+
+
+def test_multiheadattention():
+    multiheadattention = make_jax_module("""
+    
+    """)
