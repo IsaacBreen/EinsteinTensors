@@ -725,8 +725,8 @@ def construct_jax_module_from_equations(name, eqs, inputs, jit):
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
     dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
-    s += f"        self.old_init = self.init\n"
-    s += f"        self.init = lambda *args, **kwargs: self.old_init(*args, {parameter_kwarg_list} **kwargs)\n"
+    s += f"        self.old_setup = self.init\n"
+    s += f"        self.setup = lambda *args, **kwargs: self.old_setup(*args, {parameter_kwarg_list} **kwargs)\n"
     s += "\n"
     s += "    " + \
         construct_jax_init_from_equations(eqs, inputs).replace("\n", "\n    ")
@@ -861,7 +861,7 @@ def test_multiheadattention():
     function MultiheadAttention(x)
         x[t,i] = x[t,i] * gx[i] * (1[i_2]/x[t,i_3]^2)^0.5
         q[h,t,j] = q[h,j,i] * x[t,i]
-        k[h,t,j] = q[h,j,i] * x[t,i]
+        k[h,t,j] = k[h,j,i] * x[t,i]
         v[h,t,j] = v[h,j,i] * x[t,i]
         a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
         a[h,t_1,t_2] = a[h,t_1,t_2] / (a[h,t_3,t_2] + 0.000000001)
@@ -874,6 +874,18 @@ def test_multiheadattention():
     jax_code = jax_codegen(einstein_code)
     print(jax_code)
     MultiheadAttention = make_jax_module(einstein_code)
+
+    # Initialise tensor shapes randomly
+    key = jax.random.normal(jax.random.PRNGKey(0), (2, 3, 4))
+    i, hs, k, h, j, t = jax.random.randint(jax.random.PRNGKey(1), (6,), minval=1, maxval=10)
+    def multiheadselfattention_reference(x_t_i, gx_i, q_h_j_i, k_h_j_i, v_h_j_i, wu_h_hs_j, bu_k, wz_k_i, gz_i):
+        x_t_i = x_t_i * gx_i
+        q_h_j_i = q_h_j_i * x_t_i
+        k_h_j_i = k_h_j_i * x_t_i
+        v_h_j_i = v_h_j_i * x_t_i
+    
+    atten = MultiheadAttention(key, i=i, hs=hs, k=k, h=h, j=j)
+
 
 if __name__ == "__main__":
     test_multiheadattention()
