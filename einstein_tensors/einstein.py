@@ -668,7 +668,7 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
     rhs_string = helper(eq.rhs, math.inf, outer_indices)[0]
     # Apply reshapes specified by compound indices
     final_output_shape_str = []
-    any_output_index_is_compound = any(isinstance(index, CompoundIndex) for index in outer_indices)
+    any_output_index_is_compound = any(isinstance(index, CompoundIndex) for index in output_tensor.nonleading_indices(expand_compounds=False))
     if any_output_index_is_compound:
         for index in output_tensor.nonleading_indices(expand_compounds=False):
             if isinstance(index, CompoundIndex):
