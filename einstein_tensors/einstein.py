@@ -712,19 +712,19 @@ def split_indices(parameter_tensors, input_tensors):
     for tensor in parameter_tensors:
         parameter_indices.update([index.basename()
                                  for index in tensor.nonleading_indices()])
-    parameter_indices -= input_indices
+    # parameter_indices -= input_indices
     return parameter_indices, input_indices
 
 def construct_jax_module_from_equations(name, eqs, inputs, jit):
     parameter_tensors, input_tensors = split_tensors(eqs, inputs)
     parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
-    presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
-    init_indices = list(parameter_indices) + presized_input_indices
-    parameter_arg_list = ', '.join(index for index in init_indices)
-    parameter_kwarg_list = ''.join(f"{index}={index}, " for index in init_indices)
+    # presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
+    # init_indices = list(parameter_indices) + presized_input_indices
+    parameter_arg_list = ', '.join(index for index in parameter_indices)
+    parameter_kwarg_list = ''.join(f"{index}={index}, " for index in parameter_indices)
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
-    dim_sizes = ', '.join(f"'{index}': {index}" for index in init_indices)
+    dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
     s += f"        self.old_init = self.init\n"
     s += f"        self.init = lambda *args, **kwargs: self.old_init(*args, {parameter_kwarg_list} **kwargs)\n"
     s += "\n"
@@ -742,11 +742,11 @@ def get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_
 def construct_jax_init_from_equations(eqs, inputs):
     parameter_tensors, input_tensors = split_tensors(eqs, inputs)
     parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
-    presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
-    init_indices = list(parameter_indices) + presized_input_indices
+    # presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
+    # init_indices = list(parameter_indices) + presized_input_indices
     s = ""
     s += "@staticmethod\n"
-    s += f"def init(key, {''.join(index + ', ' for index in init_indices)}**kwargs):\n"
+    s += f"def init(key, {''.join(index + ', ' for index in parameter_indices)}**kwargs):\n"
     s += f"    keys = jax.random.split(key, {len(parameter_tensors)})\n"
     longest_name = max(len(tensor.canonical_pyname())
                        for tensor in parameter_tensors)
