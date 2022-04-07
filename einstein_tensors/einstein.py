@@ -95,6 +95,48 @@ class Tensor(Expression):
         return hash(tuple(self.indices))
 
 
+class CompoundTensor(Expression):
+    def __init__(self, *indices):
+        self.indices = indices
+
+    def __repr__(self):
+        return f"CompoundTensor({', '.join(repr(i) for i in self.indices)})"
+
+    def canonical_pyname(self):
+        return "_".join(i.basename() for i in self.indices)
+
+    def pystr(self):
+        return self.canonical_pyname()
+
+    def children(self):
+        return [self]
+
+    def tensors(self):
+        return [self]
+
+    def leading_index(self):
+        return self.indices[0]
+
+    def nonleading_indices(self, expand_compounds=True):
+        if expand_compounds:
+            ret = []
+            for index in self.indices[1:]:
+                if isinstance(index, CompoundIndex):
+                    for in_index in index.in_indices:
+                        ret.append(in_index)
+                else:
+                    ret.append(index)
+            return ret
+        else:
+            return self.indices[1:]
+
+    def __eq__(self, other):
+        return isinstance(other, Tensor) and self.indices == other.indices
+
+    def __hash__(self):
+        return hash(tuple(self.indices))
+
+
 class IdentityTensor(Expression):
     def __init__(self, *indices):
         self.indices = indices
@@ -137,6 +179,30 @@ class Index:
 
     def __hash__(self):
         return hash((self.name, self.idx))
+
+
+class CompoundIndex:
+    def __init__(self, in_indices, out_index):
+        self.in_indices = in_indices
+        self.out_index = out_index
+
+    def __repr__(self):
+        return f"CompoundIndex({self.in_indices}, {self.out_index})"
+
+    def basename(self):
+        return self.out_index.basename()
+
+    def pystr(self):
+        return f"{self.out_index.pystr()}[{', '.join(i.pystr() for i in self.in_indices)}]"
+
+    def tensors(self):
+        return [self.out_index]
+
+    def __eq__(self, other):
+        return isinstance(other, CompoundIndex) and self.in_indices == other.in_indices and self.out_index == other.out_index
+
+    def __hash__(self):
+        return hash((*self.in_indices, self.out_index))
 
 
 class Number:
@@ -346,6 +412,8 @@ def run_tree(tree):
             return run_tree(tree.children[0])
         elif tree.data == 'tensor':
             return Tensor(*[run_tree(t) for t in tree.children])
+        elif tree.data == 'compound_tensor':
+            return CompoundTensor(*[run_tree(t) for t in tree.children])
         elif tree.data == 'index':
             name = run_tree(tree.children[0])
             if len(tree.children) > 1:
@@ -353,6 +421,8 @@ def run_tree(tree):
             else:
                 idx = None
             return Index(name, idx)
+        elif tree.data == 'compound_index':
+            return CompoundIndex([run_tree(t) for t in tree.children[:-1]], run_tree(tree.children[-1]))
     elif tree.type == 'PYATTR':
         return tree.value
     elif tree.type == 'IDENTIFIER':
@@ -461,10 +531,8 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
                 tensor_string = f"params['{tensor_string}']"
             return tensor_string, eq.nonleading_indices(), {'is_tensor': True, 'collapsable': True}
         elif isinstance(eq, IdentityTensor):
-            immediately_collapsable = [
-                index.basename() for index in set(eq.indices) - set(outer_indices)]
-            immediately_collapsable_str = "*".join(
-                immediately_collapsable) if immediately_collapsable else None
+            immediately_collapsable = [index.basename() for index in set(eq.indices) - set(outer_indices)]
+            immediately_collapsable_str = "*".join(immediately_collapsable) if immediately_collapsable else None
             if sizes_required is not None:
                 sizes_required.update(immediately_collapsable)
             collapse_later = [index for index in set(
@@ -513,8 +581,8 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
                             output_index.append(index)
                 is_tensor = is_tensor or hdict['is_tensor']
                 collapsable = collapsable or hdict['collapsable']
-            output_index = [index for index in output_tensor.nonleading_indices(
-            ) if index in output_index] + [index for index in output_index if index not in output_tensor.nonleading_indices()]
+            output_index = [index for index in outer_indices if index in output_index] + \
+                           [index for index in output_index if index not in outer_indices]
             all_child_output_indices = set()
             for child_output_indices_ in child_output_indices:
                 all_child_output_indices.update(child_output_indices_)
@@ -599,8 +667,22 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
         raise ValueError(
             f"This should never happen; we should have handled all cases.")
 
-    outer_indices = [index for index in eq.lhs.nonleading_indices()]
+    outer_indices = list(eq.lhs.nonleading_indices())
     rhs_string = helper(eq.rhs, math.inf, outer_indices)[0]
+    # Apply reshapes specified by compound indices
+    final_output_shape_str = []
+    any_output_index_is_compound = False
+    for index in output_tensor.nonleading_indices(expand_compounds=False):
+        any_output_index_is_compound = True
+        if isinstance(index, CompoundIndex):
+            final_output_shape_str.append(index.out_index.basename())
+            sizes_required.update(in_index.basename() for in_index in index.in_indices)
+        else:
+            final_output_shape_str.append(index.basename())
+    final_output_shape_str = ",".join(final_output_shape_str)
+    if any_output_index_is_compound:
+        rhs_string = f"(({rhs_string}).reshape({final_output_shape_str}))"
+
     return f"{eq.lhs.pystr()} = {rhs_string}"
 
 def construct_equations(eqs, parameter_tensors=None, sizes_required=None):
@@ -769,6 +851,24 @@ def make_jax_module(s, jit=True):
 
 
 def test_multiheadattention():
-    multiheadattention = make_jax_module("""
-    
-    """)
+    print("Running test_multiheadattention")
+    einstein_code = """
+    function MultiheadAttention(x)
+        x[t,i] = x[t,i] * gx[i] * (1[i_2]/x[t,i_3]^2)^0.5
+        q[h,t,j] = q[h,j,i] * x[t,i]
+        k[h,t,j] = q[h,j,i] * x[t,i]
+        v[h,t,j] = v[h,j,i] * x[t,i]
+        a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
+        a[h,t_1,t_2] = a[h,t_1,t_2] / (a[h,t_3,t_2] + 0.000000001)
+        u[t_1,h+hs=k] = activation(wu[h,hs,j] * a[h,t_1,t_2] * v[h,t_2,j] + bu[k])
+        z[t,l] = wz[k,i] * u[t,k]
+        z[t,i] = z[t,i] * gz[i] * (1[i_2]/z[t,i_3]^2)^0.5
+        return z[t,i]
+    end
+    """
+    jax_code = jax_codegen(einstein_code)
+    print(jax_code)
+    MultiheadAttention = make_jax_module(einstein_code)
+
+if __name__ == "__main__":
+    test_multiheadattention()

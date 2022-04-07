@@ -5,7 +5,7 @@ body: statement+
 statement: (return | equation | function) ("\n" | ";")
 
 return: "return" expression ("," expression)*
-equation: value "=" expression
+equation: compound_tensor "=" expression
 function: "function" IDENTIFIER parameter_tuple body "end"
 parameter_tuple: "(" (IDENTIFIER ("," IDENTIFIER)*)? ")"
 
@@ -23,6 +23,8 @@ value   : PYATTR "(" expression ")" -> function_call
         | tensor
         | identity_tensor
         | NUMBER
+compound_tensor: index "[" (index | compound_index) ("," (index | compound_index))* "]"
+compound_index: index ("+" index)+ "=" index
 tensor: index "[" index ("," index)* "]"
 identity_tensor: "1" "[" index ("," index)* "]"
 index: INDEX_IDENTIFIER ("_" NUMBER)?
