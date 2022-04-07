@@ -637,12 +637,9 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
             child_strings_transexpanded = []
             for child_string, child_output_indices in zip(child_strings, child_output_indices):
                 if child_output_indices:
-                    child_output_indices_pos = {
-                        index: i for i, index in enumerate(child_output_indices)}
-                    transexpand_dims = [child_output_indices_pos[index]
-                                        if index in child_output_indices_pos else None for index in output_index]
-                    child_strings_transexpanded.append(
-                        codegen_transexpand(child_string, transexpand_dims))
+                    child_output_indices_pos = {index: i for i, index in enumerate(child_output_indices)}
+                    transexpand_dims = [child_output_indices_pos[index] if index in child_output_indices_pos else None for index in output_index]
+                    child_strings_transexpanded.append(codegen_transexpand(child_string, transexpand_dims))
                 else:
                     child_strings_transexpanded.append(child_string)
             return symbols[type(eq)]['symbol'].join(child_strings_transexpanded), output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
@@ -671,18 +668,17 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
     rhs_string = helper(eq.rhs, math.inf, outer_indices)[0]
     # Apply reshapes specified by compound indices
     final_output_shape_str = []
-    any_output_index_is_compound = False
-    for index in output_tensor.nonleading_indices(expand_compounds=False):
-        any_output_index_is_compound = True
-        if isinstance(index, CompoundIndex):
-            final_output_shape_str.append(index.out_index.basename())
-            sizes_required.update(in_index.basename() for in_index in index.in_indices)
-        else:
-            final_output_shape_str.append(index.basename())
-    final_output_shape_str = ",".join(final_output_shape_str)
+    any_output_index_is_compound = any(isinstance(index, CompoundIndex) for index in outer_indices)
     if any_output_index_is_compound:
+        for index in output_tensor.nonleading_indices(expand_compounds=False):
+            if isinstance(index, CompoundIndex):
+                final_output_shape_str.append(index.out_index.basename())
+                sizes_required.update(in_index.basename() for in_index in index.in_indices)
+            else:
+                final_output_shape_str.append(index.basename())
+                sizes_required.update(in_index.basename() for in_index in index.in_indices)
+        final_output_shape_str = ",".join(final_output_shape_str)
         rhs_string = f"(({rhs_string}).reshape({final_output_shape_str}))"
-
     return f"{eq.lhs.pystr()} = {rhs_string}"
 
 def construct_equations(eqs, parameter_tensors=None, sizes_required=None):
@@ -715,7 +711,7 @@ def split_indices(parameter_tensors, input_tensors):
     # parameter_indices -= input_indices
     return parameter_indices, input_indices
 
-def construct_jax_module_from_equations(name, eqs, inputs, jit):
+def construct_jax_module_from_equations(name, eqs, inputs, jit, vmap):
     parameter_tensors, input_tensors = split_tensors(eqs, inputs)
     parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
     # presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
@@ -725,15 +721,14 @@ def construct_jax_module_from_equations(name, eqs, inputs, jit):
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
     dim_sizes = ', '.join(f"'{index}': {index}" for index in parameter_indices)
-    s += f"        self.old_setup = self.init\n"
-    s += f"        self.setup = lambda *args, **kwargs: self.old_setup(*args, {parameter_kwarg_list} **kwargs)\n"
+    s += f"        self.old_setup = self.setup\n"
+    s += f"        self.setup = lambda *args, **kwargs: self.old_setup(*args, {parameter_kwarg_list}**kwargs)\n"
     s += "\n"
     s += "    " + \
         construct_jax_init_from_equations(eqs, inputs).replace("\n", "\n    ")
     s += "\n"
     s += "    @staticmethod\n"
-    s += "    " + construct_jax_apply_from_equations(
-        eqs=eqs, inputs=inputs, jit=jit).replace("\n", "\n    ")
+    s += "    " + construct_jax_apply_from_equations(eqs=eqs, inputs=inputs, jit=jit, vmap=vmap).replace("\n", "\n    ")
     return s
 
 def get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices):
@@ -765,7 +760,7 @@ def construct_jax_init_from_equations(eqs, inputs):
     s += f"    return {{\n{param_dict_inner_str}\n    }}\n"
     return s
 
-def construct_jax_apply_from_equations(eqs, inputs, jit=True):
+def construct_jax_apply_from_equations(eqs, inputs, jit=True, vmap=True):
     parameter_tensors, input_tensors = split_tensors(eqs, inputs)
     parameter_indices, input_indices = split_indices(
         parameter_tensors, input_tensors)
@@ -774,7 +769,7 @@ def construct_jax_apply_from_equations(eqs, inputs, jit=True):
     s = ""
     # s +=f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors] + ['None' for _ in parameter_tensors])}))\n"
     s += "@jit\n" if jit else ""
-    s += f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors])}, None))\n"
+    s += f"@lambda func: vmap(func, in_axes=({', '.join(['0' for _ in input_tensors])}, None))\n" if vmap else ""
     s += f"def __call__({''.join([name + ', ' for name in input_tensor_names])}params):\n"
     # Indent
     sizes_required = set()
@@ -823,14 +818,13 @@ def split_equations_along_index(eqs, split_index):
             cache[e] = {'inputs': inputs, 'outputs': outputs}
 
 
-def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True):
+def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True, vmap=True):
     s = "import jax\nimport jax.numpy as jnp\nfrom jax import jit, vmap\n"
     ss = []
     functions = body.functions
     leftover_expressions = body
     for function in functions:
-        ss.append(construct_jax_module_from_equations(
-            function.name, function.body, function.arguments, jit=jit))
+        ss.append(construct_jax_module_from_equations(function.name, function.body, function.arguments, jit=jit, vmap=vmap))
     s += '\n\n\n'.join(ss)
     s += construct_jax_module_from_equations(main_name, leftover_expressions, main_inputs if main_inputs is not None else [
     ], jit=jit) if leftover_expressions.returns else ""
@@ -839,23 +833,23 @@ def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True):
 # print(construct_jax_module_from_equations("TestModule", eqs, "x", False))
 
 
-def jax_codegen(s, module_name="main", main_inputs=None, jit=True):
+def jax_codegen(s, module_name="main", main_inputs=None, jit=True, vmap=True):
     tree = l.parse(s)
     eqs = run_tree(tree)
-    c = construct_jax_modules(eqs, main_inputs, jit=jit)
+    c = construct_jax_modules(eqs, main_inputs, jit=jit, vmap=vmap)
     return c
 
 
-def make_jax_module(s, jit=True):
+def make_jax_module(s, jit=True, vmap=True):
     tree = l.parse(s)
     eqs = run_tree(tree)
-    c = construct_jax_modules(eqs, jit=jit)
+    c = construct_jax_modules(eqs, jit=jit, vmap=vmap)
     exec(c)
     module_names = [function.name for function in eqs.functions]
     return eval(f"{', '.join(module_names)}")
 
 
-def test_multiheadattention():
+def test_multiheadattention(jit=False, vmap=False):
     print("Running test_multiheadattention")
     einstein_code = """
     function MultiheadAttention(x)
@@ -865,26 +859,55 @@ def test_multiheadattention():
         v[h,t,j] = v[h,j,i] * x[t,i]
         a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
         a[h,t_1,t_2] = a[h,t_1,t_2] / (a[h,t_3,t_2] + 0.000000001)
-        u[t_1,h+hs=k] = activation(wu[h,hs,j] * a[h,t_1,t_2] * v[h,t_2,j] + bu[k])
-        z[t,l] = wz[k,i] * u[t,k]
+        u[t_1,h+hs=k] = wu[h,hs,j] * a[h,t_1,t_2] * v[h,t_2,j] + bu[k]
+        z[t,i] = wz[k,i] * u[t,k]
         z[t,i] = z[t,i] * gz[i] * (1[i_2]/z[t,i_3]^2)^0.5
         return z[t,i]
     end
     """
-    jax_code = jax_codegen(einstein_code)
+    def activation(x):
+        return jnp.maximum(x, 0)
+
+    jax_code = jax_codegen(einstein_code, jit=jit, vmap=vmap)
     print(jax_code)
-    MultiheadAttention = make_jax_module(einstein_code)
 
     # Initialise tensor shapes randomly
-    key = jax.random.normal(jax.random.PRNGKey(0), (2, 3, 4))
-    i, hs, k, h, j, t = jax.random.randint(jax.random.PRNGKey(1), (6,), minval=1, maxval=10)
-    def multiheadselfattention_reference(x_t_i, gx_i, q_h_j_i, k_h_j_i, v_h_j_i, wu_h_hs_j, bu_k, wz_k_i, gz_i):
-        x_t_i = x_t_i * gx_i
-        q_h_j_i = q_h_j_i * x_t_i
-        k_h_j_i = k_h_j_i * x_t_i
-        v_h_j_i = v_h_j_i * x_t_i
-    
-    atten = MultiheadAttention(key, i=i, hs=hs, k=k, h=h, j=j)
+    key = jax.random.PRNGKey(0)
+    for i in range(10):
+        key, subkey = jax.random.split(key)
+        i, hs, h, j, t = jax.random.randint(subkey, (5,), minval=1, maxval=10)
+        k = h*hs
+        print(f"i={i}, hs={hs}, k={k}, h={h}, j={j}, t={t}")
+        def multiheadselfattention_reference(x_t_i, gx_i, q_h_j_i, k_h_j_i, v_h_j_i, wu_h_hs_j, bu_k, wz_k_i, gz_i):
+            x_t_i = x_t_i * gx_i * (i/(x_t_i**2).sum(axis=-1, keepdims=True))**0.5
+            q_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
+            k_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
+            v_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
+            assert q_h_t_j.shape == (h, t, j)
+            a_h_t_t = jnp.exp(jnp.einsum("haj,hbj->hab", q_h_t_j, k_h_t_j))
+            a_h_t_t = a_h_t_t / (a_h_t_t.sum(axis=-1, keepdims=True) + 1e-9)
+            assert a_h_t_t.shape == (h, t, t)
+            u_t_k = jnp.reshape(jnp.einsum('hsj,hat,htj->hsa', wu_h_hs_j, a_h_t_t, v_h_t_j), [t,k]) + bu_k
+            assert u_t_k.shape == (t, k)
+            z_t_i = jnp.einsum("tk,ki->ti", u_t_k, wz_k_i)
+            z_t_i = z_t_i * gz_i * (i/(z_t_i**2).sum(axis=-1, keepdims=True))**0.5
+            assert z_t_i.shape == (t,i)
+            return z_t_i
+
+        
+        MultiheadAttention = make_jax_module(einstein_code, jit=jit, vmap=vmap)
+        atten = MultiheadAttention(i=i, hs=hs, k=k, h=h, j=j)
+        key, subkey = jax.random.split(key)
+        params = atten.setup(subkey)
+        key, subkey = jax.random.split(key)
+        x_t_i = jax.random.normal(subkey, (t, i))
+        # print("Shapes:")
+        # print(f"x_t_i: {x_t_i.shape}")
+        # for name, param in params.items():
+        #     print(f"{name}: {param.shape}")
+        ref_result = multiheadselfattention_reference(x_t_i, **params)
+        ein_result = atten(x_t_i, params)
+        assert jnp.allclose(ein_result, ref_result)
 
 
 if __name__ == "__main__":
