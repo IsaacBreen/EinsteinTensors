@@ -746,7 +746,7 @@ def construct_jax_init_from_equations(eqs, inputs):
     # init_indices = list(parameter_indices) + presized_input_indices
     s = ""
     s += "@staticmethod\n"
-    s += f"def init(key, {''.join(index + ', ' for index in parameter_indices)}**kwargs):\n"
+    s += f"def setup(key, {''.join(index + ', ' for index in parameter_indices)}**kwargs):\n"
     s += f"    keys = jax.random.split(key, {len(parameter_tensors)})\n"
     longest_name = max(len(tensor.canonical_pyname())
                        for tensor in parameter_tensors)
@@ -775,7 +775,7 @@ def construct_jax_apply_from_equations(eqs, inputs, jit=True):
     # s +=f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors] + ['None' for _ in parameter_tensors])}))\n"
     s += "@jit\n" if jit else ""
     s += f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors])}, None))\n"
-    s += f"def apply({''.join([name + ', ' for name in input_tensor_names])}params):\n"
+    s += f"def __call__({''.join([name + ', ' for name in input_tensor_names])}params):\n"
     # Indent
     sizes_required = set()
     eq_string = construct_equations(
