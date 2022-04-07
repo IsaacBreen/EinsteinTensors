@@ -741,7 +741,7 @@ def construct_jax_init_from_equations(eqs, inputs):
         parameter_tensors, input_tensors)
     s = ""
     s += "@staticmethod\n"
-    s += f"def init(key, {''.join(index + ', ' for index in list(input_indices) + list(parameter_indices))}**kwargs):\n"
+    s += f"def init(key, {''.join(index + ', ' for index in list(parameter_indices))}**kwargs):\n"
     s += f"    keys = jax.random.split(key, {len(parameter_tensors)})\n"
     longest_name = max(len(tensor.canonical_pyname())
                        for tensor in parameter_tensors)
