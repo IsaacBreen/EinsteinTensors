@@ -514,13 +514,17 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
     """
 
     symbols = {
-        Sum: {'symbol': ' + ', 'is_pycall': False, 'precedence': 4},
-        Product: {'symbol': '*', 'is_pycall': False, 'precedence': 10},
-        Power: {'symbol': '**', 'is_pycall': False, 'precedence': 2},
-        FunctionCall: {'symbol': '', 'is_pycall': True, 'precedence': 10},
+        Sum: {'symbol': ' + ', 'is_pycall': False, 'precedence': 4, 'commutative': False},
+        Product: {'symbol': '*', 'is_pycall': False, 'precedence': 10, 'commutative': True},
+        Power: {'symbol': '**', 'is_pycall': False, 'precedence': 2, 'commutative': False},
+        FunctionCall: {'symbol': '', 'is_pycall': True, 'precedence': 10, 'commutative': True},
     }
 
     output_tensor = eq.lhs
+    # indices_to_replace = {}
+    # for index in output_tensor.nonleading_indices(expand_compounds=False):
+    #     if isinstance(index, CompoundIndex):
+    #         indices_to_replace[index.out_index] = index.in_indices
 
     def helper(eq, prev_precedence, outer_indices):
         if isinstance(eq, Number):
@@ -538,9 +542,8 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
             collapse_later = [index for index in set(
                 eq.indices) if index in outer_indices]
             return immediately_collapsable_str, collapse_later, {'is_tensor': False, 'collapsable': True}
-        elif symbols[type(eq)]['precedence'] > prev_precedence:
-            s, output_index, hret = helper(
-                eq, symbols[type(eq)]['precedence'], outer_indices)
+        elif symbols[type(eq)]['precedence'] > prev_precedence or (symbols[type(eq)]['precedence'] == prev_precedence and not symbols[type(eq)]['commutative']):
+            s, output_index, hret = helper(eq, symbols[type(eq)]['precedence']+1, outer_indices)
             return f"({s})", output_index, hret
         elif isinstance(eq, Product):
             def get_all_indices(expression):
@@ -673,10 +676,10 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
         for index in output_tensor.nonleading_indices(expand_compounds=False):
             if isinstance(index, CompoundIndex):
                 final_output_shape_str.append(index.out_index.basename())
-                sizes_required.update(in_index.basename() for in_index in index.in_indices)
+                sizes_required.add(index.out_index.basename())
             else:
                 final_output_shape_str.append(index.basename())
-                sizes_required.update(in_index.basename() for in_index in index.in_indices)
+                sizes_required.add(index.basename())
         final_output_shape_str = ",".join(final_output_shape_str)
         rhs_string = f"(({rhs_string}).reshape({final_output_shape_str}))"
     return f"{eq.lhs.pystr()} = {rhs_string}"
@@ -844,12 +847,16 @@ def make_jax_module(s, jit=True, vmap=True):
     tree = l.parse(s)
     eqs = run_tree(tree)
     c = construct_jax_modules(eqs, jit=jit, vmap=vmap)
-    exec(c)
+    compiled = compile(c, "<string>", "exec")
+    exec(compiled)
     module_names = [function.name for function in eqs.functions]
     return eval(f"{', '.join(module_names)}")
 
 
 def test_multiheadattention(jit=False, vmap=False):
+    from jax.config import config
+    config.update("jax_debug_nans", True)
+
     print("Running test_multiheadattention")
     einstein_code = """
     function MultiheadAttention(x)
@@ -857,9 +864,9 @@ def test_multiheadattention(jit=False, vmap=False):
         q[h,t,j] = q[h,j,i] * x[t,i]
         k[h,t,j] = k[h,j,i] * x[t,i]
         v[h,t,j] = v[h,j,i] * x[t,i]
-        a[h,t_1,t_2] = jnp.exp(q[h,t_1,j] * k[h,t_2,j])
-        a[h,t_1,t_2] = a[h,t_1,t_2] / (a[h,t_3,t_2] + 0.000000001)
-        u[t_1,h+hs=k] = wu[h,hs,j] * a[h,t_1,t_2] * v[h,t_2,j] + bu[k]
+        a[h,t_1,t_2] = q[h,t_1,j] * k[h,t_2,j]
+        a[h,t_1,t_2] = jnp.exp(a[h,t_1,t_2] - a[h,t_3,t_2])
+        u[t_1,h+hs=k] = wu[h,hs,j] * a[h,t_1,t_2] * v[h,t_2,j] + bu[h,hs]
         z[t,i] = wz[k,i] * u[t,k]
         z[t,i] = z[t,i] * gz[i] * (1[i_2]/z[t,i_3]^2)^0.5
         return z[t,i]
@@ -878,24 +885,60 @@ def test_multiheadattention(jit=False, vmap=False):
         i, hs, h, j, t = jax.random.randint(subkey, (5,), minval=1, maxval=10)
         k = h*hs
         print(f"i={i}, hs={hs}, k={k}, h={h}, j={j}, t={t}")
-        def multiheadselfattention_reference(x_t_i, gx_i, q_h_j_i, k_h_j_i, v_h_j_i, wu_h_hs_j, bu_k, wz_k_i, gz_i):
+        def multiheadselfattention_reference(x_t_i, gx_i, q_h_j_i, k_h_j_i, v_h_j_i, wu_h_hs_j, bu_h_hs, wz_k_i, gz_i):
             x_t_i = x_t_i * gx_i * (i/(x_t_i**2).sum(axis=-1, keepdims=True))**0.5
             q_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
-            k_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
-            v_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, q_h_j_i)
+            k_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, k_h_j_i)
+            v_h_t_j = jnp.einsum("ti,hji->htj", x_t_i, v_h_j_i)
             assert q_h_t_j.shape == (h, t, j)
+            assert not (jnp.isnan(q_h_t_j).any() and jnp.isnan(k_h_t_j).any() and jnp.isnan(v_h_t_j).any())
             a_h_t_t = jnp.exp(jnp.einsum("haj,hbj->hab", q_h_t_j, k_h_t_j))
             a_h_t_t = a_h_t_t / (a_h_t_t.sum(axis=-1, keepdims=True) + 1e-9)
             assert a_h_t_t.shape == (h, t, t)
-            u_t_k = jnp.reshape(jnp.einsum('hsj,hat,htj->hsa', wu_h_hs_j, a_h_t_t, v_h_t_j), [t,k]) + bu_k
+            assert not (jnp.isnan(a_h_t_t).any())
+            u_t_k = jnp.reshape(jnp.einsum('hsj,hat,htj->hsa', wu_h_hs_j, a_h_t_t, v_h_t_j), [t,k]) + bu_h_hs
             assert u_t_k.shape == (t, k)
+            assert not (jnp.isnan(u_t_k).any())
             z_t_i = jnp.einsum("tk,ki->ti", u_t_k, wz_k_i)
             z_t_i = z_t_i * gz_i * (i/(z_t_i**2).sum(axis=-1, keepdims=True))**0.5
             assert z_t_i.shape == (t,i)
+            assert not (jnp.isnan(z_t_i).any())
             return z_t_i
 
-        
-        MultiheadAttention = make_jax_module(einstein_code, jit=jit, vmap=vmap)
+        class MultiheadAttention:
+            def __init__(self, j, i, hs, k, h):
+                self.old_setup = self.setup
+                self.setup = lambda *args, **kwargs: self.old_setup(*args, j=j, i=i, hs=hs, k=k, h=h, **kwargs)
+
+            @staticmethod
+            def setup(key, j, i, hs, k, h, **kwargs):
+                keys = jax.random.split(key, 8)
+                return {
+                    "gx_i":      jax.random.normal(keys[0], shape=[i]),
+                    "q_h_j_i":   jax.random.normal(keys[1], shape=[h, j, i]),
+                    "k_h_j_i":   jax.random.normal(keys[2], shape=[h, j, i]),
+                    "v_h_j_i":   jax.random.normal(keys[3], shape=[h, j, i]),
+                    "wu_h_hs_j": jax.random.normal(keys[4], shape=[h, hs, j]),
+                    "bu_h_hs":   jax.random.normal(keys[5], shape=[h, hs]),
+                    "wz_k_i":    jax.random.normal(keys[6], shape=[k, i]),
+                    "gz_i":      jax.random.normal(keys[7], shape=[i])
+                }
+
+            @staticmethod
+            def __call__(x_t_i, params):
+                i, k, t = x_t_i.shape[1], params['wz_k_i'].shape[0], x_t_i.shape[0]
+                x_t_i = jnp.einsum('ti,i,t->ti', x_t_i, params['gx_i'], ((i)*jnp.einsum('ti->t', (x_t_i**2)**-1))**0.5)
+                q_h_t_j = jnp.einsum('hji,ti->htj', params['q_h_j_i'], x_t_i)
+                k_h_t_j = jnp.einsum('hji,ti->htj', params['k_h_j_i'], x_t_i)
+                v_h_t_j = jnp.einsum('hji,ti->htj', params['v_h_j_i'], x_t_i)
+                a_h_t_t = jnp.einsum('haj,htj->hat', q_h_t_j, k_h_t_j)
+                a_h_t_t = jnp.exp(a_h_t_t + ((-1)*jnp.einsum('hat->ht', a_h_t_t))[:, None, :])
+                u_t_k = (((jnp.einsum('bhj,bta,baj->tbh', params['wu_h_hs_j'], a_h_t_t, v_h_t_j)) + params['bu_h_hs'][None, :, :]).reshape(t,k))
+                z_t_i = jnp.einsum('ki,tk->ti', params['wz_k_i'], u_t_k)
+                z_t_i = jnp.einsum('ti,i,t->ti', z_t_i, params['gz_i'], ((i)*jnp.einsum('ti->t', (z_t_i**2)**-1))**0.5)
+                return z_t_i
+
+        # MultiheadAttention = make_jax_module(einstein_code, jit=jit, vmap=vmap)
         atten = MultiheadAttention(i=i, hs=hs, k=k, h=h, j=j)
         key, subkey = jax.random.split(key)
         params = atten.setup(subkey)
@@ -907,7 +950,7 @@ def test_multiheadattention(jit=False, vmap=False):
         #     print(f"{name}: {param.shape}")
         ref_result = multiheadselfattention_reference(x_t_i, **params)
         ein_result = atten(x_t_i, params)
-        assert jnp.allclose(ein_result, ref_result)
+        assert jnp.allclose(ein_result, ref_result), f"difference: {jnp.abs(ein_result - ref_result).sum()}"
 
 
 if __name__ == "__main__":
