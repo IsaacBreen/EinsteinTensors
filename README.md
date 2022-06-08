@@ -1,4 +1,4 @@
-NOTE: This is highly experimental. It is not guaranteed to work. However, I've found it to be stable enough to use as a starting point in my own projects.
+DEPRECATED: use https://github.com/IsaacBreen/einexpr instead.
 
 # Installation
 
