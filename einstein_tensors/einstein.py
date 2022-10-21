@@ -118,17 +118,15 @@ class CompoundTensor(Expression):
         return self.indices[0]
 
     def nonleading_indices(self, expand_compounds=True):
-        if expand_compounds:
-            ret = []
-            for index in self.indices[1:]:
-                if isinstance(index, CompoundIndex):
-                    for in_index in index.in_indices:
-                        ret.append(in_index)
-                else:
-                    ret.append(index)
-            return ret
-        else:
+        if not expand_compounds:
             return self.indices[1:]
+        ret = []
+        for index in self.indices[1:]:
+            if isinstance(index, CompoundIndex):
+                ret.extend(iter(index.in_indices))
+            else:
+                ret.append(index)
+        return ret
 
     def __eq__(self, other):
         return isinstance(other, Tensor) and self.indices == other.indices
@@ -272,8 +270,7 @@ class Equation:
 
     def make_apply(self):
         tensors = self.rhs.tensors()
-        s = ""
-        return s
+        return ""
 
     def tensors(self):
         tensors = []
@@ -327,10 +324,7 @@ class Equations:
         return f"Equations({', '.join(repr(e) for e in self.equations)})"
 
     def make_apply(self):
-        s = ""
-        for e in self.equations:
-            s += e.make_apply() + "\n"
-        return s
+        return "".join(e.make_apply() + "\n" for e in self.equations)
 
     def tensors(self):
         tensors = []
@@ -410,16 +404,11 @@ def run_tree(tree):
             return IdentityTensor(*[run_tree(t) for t in tree.children])
         elif tree.data == 'value':
             return run_tree(tree.children[0])
-        elif tree.data == 'tensor':
-            return Tensor(*[run_tree(t) for t in tree.children])
         elif tree.data == 'compound_tensor':
             return CompoundTensor(*[run_tree(t) for t in tree.children])
         elif tree.data == 'index':
             name = run_tree(tree.children[0])
-            if len(tree.children) > 1:
-                idx = run_tree(tree.children[1]).value
-            else:
-                idx = None
+            idx = run_tree(tree.children[1]).value if len(tree.children) > 1 else None
             return Index(name, idx)
         elif tree.data == 'compound_index':
             return CompoundIndex([run_tree(t) for t in tree.children[:-1]], run_tree(tree.children[-1]))
@@ -437,20 +426,19 @@ def run_tree(tree):
 
 
 def get_transexpand_and_collapse_instructions(eq):
-    ordered_indices = []
     lhs_tensor = eq.lhs.tensors()[0]
-    for index in lhs_tensor.nonleading_indices():
-        ordered_indices.append(index)
+    ordered_indices = list(lhs_tensor.nonleading_indices())
     for tensor in eq.rhs.tensors():
         for index in tensor.nonleading_indices():
             if index not in ordered_indices:
                 ordered_indices.append(index)
 
     lhs_indices = list(lhs_tensor.nonleading_indices())
-    dimensions_for_final_collapse_to_lhs = []
-    for i, index in enumerate(ordered_indices):
-        if index not in lhs_indices:
-            dimensions_for_final_collapse_to_lhs.append(i)
+    dimensions_for_final_collapse_to_lhs = [
+        i
+        for i, index in enumerate(ordered_indices)
+        if index not in lhs_indices
+    ]
 
     dimensions_for_transpose_and_expand = {}
     for tensor in eq.rhs.tensors():
@@ -490,10 +478,7 @@ def codegen_transexpand(tensor_name, dims):
     numbered_dims = tuple(dim for dim in dims if dim is not None)
     if numbered_dims != tuple(range(len(numbered_dims))):
         s += f".transpose({numbered_dims})"
-    at_least_one_expansion = False
-    for dim in dims:
-        if dim is None:
-            at_least_one_expansion = True
+    at_least_one_expansion = any(dim is None for dim in dims)
     if at_least_one_expansion:
         index_str = ', '.join("None" if dim is None else ":" for dim in dims)
         s += f"[{index_str}]" if index_str else ""
@@ -554,6 +539,7 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
                     elif isinstance(child, (Sum, Product, Power, FunctionCall)):
                         indices.extend(get_all_indices(child))
                 return indices
+
             child_cumulative_indices = [
                 get_all_indices(child) for child in eq.children()]
             all_child_indices = set()
@@ -615,9 +601,13 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
                     nontensor_child_strings.append(child_string)
             einstring_right = "".join(
                 index_letters[index] for index in output_index)
-            einstring = ",".join(s for s in einstring_left) + \
-                "->" + einstring_right
-            return f"{''.join('(' + s + ')*' for s in nontensor_child_strings)}jnp.einsum('{einstring}', {', '.join(tensor_child_strings)})", output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
+            einstring = ((",".join(einstring_left) + "->") + einstring_right)
+            return (
+                f"{''.join(f'({s})*' for s in nontensor_child_strings)}jnp.einsum('{einstring}', {', '.join(tensor_child_strings)})",
+                output_index,
+                {'is_tensor': is_tensor, 'collapsable': collapsable},
+            )
+
         elif isinstance(eq, (Sum, Power)):
             child_strings = []
             child_output_indices = []
@@ -664,8 +654,7 @@ def construct_equation(eq, parameter_tensors=None, sizes_required=None):
             return f"{eq.name}({', '.join(child_strings)})", output_index, {'is_tensor': is_tensor, 'collapsable': collapsable}
         else:
             raise ValueError(f"Unknown expression type {type(eq)}")
-        raise ValueError(
-            f"This should never happen; we should have handled all cases.")
+        raise ValueError("This should never happen; we should have handled all cases.")
 
     outer_indices = list(eq.lhs.nonleading_indices())
     rhs_string = helper(eq.rhs, math.inf, outer_indices)[0]
@@ -719,7 +708,7 @@ def construct_jax_module_from_equations(name, eqs, inputs, jit, vmap):
     parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
     # presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
     # init_indices = list(parameter_indices) + presized_input_indices
-    parameter_arg_list = ', '.join(index for index in parameter_indices)
+    parameter_arg_list = ', '.join(parameter_indices)
     parameter_kwarg_list = ''.join(f"{index}={index}, " for index in parameter_indices)
     s = f"class {name}:\n"
     s += f"    def __init__(self, {parameter_arg_list}):\n"
@@ -740,11 +729,9 @@ def get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_
 def construct_jax_init_from_equations(eqs, inputs):
     parameter_tensors, input_tensors = split_tensors(eqs, inputs)
     parameter_indices, input_indices = split_indices(parameter_tensors, input_tensors)
-    # presized_input_indices = get_input_indices_that_do_not_depend_on_parameters(parameter_indices, input_indices)
-    # init_indices = list(parameter_indices) + presized_input_indices
-    s = ""
-    s += "@staticmethod\n"
-    s += f"def setup(key, {''.join(index + ', ' for index in parameter_indices)}**kwargs):\n"
+    s = "" + "@staticmethod\n"
+    s += f"def setup(key, {''.join(f'{index}, ' for index in parameter_indices)}**kwargs):\n"
+
     s += f"    keys = jax.random.split(key, {len(parameter_tensors)})\n"
     longest_name = max(len(tensor.canonical_pyname())
                        for tensor in parameter_tensors)
@@ -769,16 +756,15 @@ def construct_jax_apply_from_equations(eqs, inputs, jit=True, vmap=True):
         parameter_tensors, input_tensors)
     input_tensor_names = [tensor.pystr() for tensor in input_tensors]
     parameter_tensor_names = [tensor.pystr() for tensor in parameter_tensors]
-    s = ""
-    # s +=f"@lambda apply: vmap(apply, in_axes=({', '.join(['0' for _ in input_tensors] + ['None' for _ in parameter_tensors])}))\n"
-    s += "@jit\n" if jit else ""
+    s = "" + ("@jit\n" if jit else "")
     s += f"@lambda func: vmap(func, in_axes=({', '.join(['0' for _ in input_tensors])}, None))\n" if vmap else ""
-    s += f"def __call__({''.join([name + ', ' for name in input_tensor_names])}params):\n"
+    s += f"def __call__({''.join([f'{name}, ' for name in input_tensor_names])}params):\n"
+
     # Indent
     sizes_required = set()
     eq_string = construct_equations(
         eqs, parameter_tensors, sizes_required=sizes_required).replace("\n", "\n    ")
-    if len(sizes_required) > 0:
+    if sizes_required:
         sizes = []
         for index_basename in sizes_required:
             break_flag = False
@@ -806,8 +792,8 @@ def construct_jax_apply_from_equations(eqs, inputs, jit=True, vmap=True):
                     f"Could not find index {index_basename} in {input_tensors + parameter_tensors}")
         s += "    " + ", ".join(sizes_required) + \
             " = " + ", ".join(sizes) + "\n"
-    s += "    " + eq_string + "\n"
-    s += "    " + eqs.returns[0].pystr()
+    s += f"    {eq_string}" + "\n"
+    s += f"    {eqs.returns[0].pystr()}"
     return s
 
 def split_equations_along_index(eqs, split_index):
@@ -822,13 +808,24 @@ def split_equations_along_index(eqs, split_index):
 
 
 def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True, vmap=True):
-    s = "import jax\nimport jax.numpy as jnp\nfrom jax import jit, vmap\n"
-    ss = []
     functions = body.functions
     leftover_expressions = body
-    for function in functions:
-        ss.append(construct_jax_module_from_equations(function.name, function.body, function.arguments, jit=jit, vmap=vmap))
-    s += '\n\n\n'.join(ss)
+    ss = [
+        construct_jax_module_from_equations(
+            function.name,
+            function.body,
+            function.arguments,
+            jit=jit,
+            vmap=vmap,
+        )
+        for function in functions
+    ]
+
+    s = (
+        "import jax\nimport jax.numpy as jnp\nfrom jax import jit, vmap\n"
+        + '\n\n\n'.join(ss)
+    )
+
     s += construct_jax_module_from_equations(main_name, leftover_expressions, main_inputs if main_inputs is not None else [
     ], jit=jit) if leftover_expressions.returns else ""
     return s
@@ -839,8 +836,7 @@ def construct_jax_modules(body, main_name="main", main_inputs=None, jit=True, vm
 def jax_codegen(s, module_name="main", main_inputs=None, jit=True, vmap=True):
     tree = l.parse(s)
     eqs = run_tree(tree)
-    c = construct_jax_modules(eqs, main_inputs, jit=jit, vmap=vmap)
-    return c
+    return construct_jax_modules(eqs, main_inputs, jit=jit, vmap=vmap)
 
 
 def make_jax_module(s, jit=True, vmap=True):
